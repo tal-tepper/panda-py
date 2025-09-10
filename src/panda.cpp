@@ -426,6 +426,11 @@ bool Panda::moveToStart(double speed_factor, const Vector7d &stiffness,
                              damping, dq_threshold, success_threshold);
 }
 
+void Panda::update_robot_state() {
+  std::lock_guard<std::mutex> lock(mux_);
+  state_ = robot_->readOnce();
+}
+
 void Panda::setDefaultBehavior() {
   recover();
   _log("info", "Resetting impedance and collision behavior.");

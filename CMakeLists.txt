@@ -55,6 +55,7 @@ pybind11_add_module(_core
   src/controllers/force.cpp
   src/controllers/joint_trajectory.cpp
   src/controllers/cartesian_trajectory.cpp
+  src/controllers/hybrid_force_motion.cpp
   src/motion/generators.cpp
   src/motion/time_optimal/trajectory.cpp
   src/motion/time_optimal/path.cpp

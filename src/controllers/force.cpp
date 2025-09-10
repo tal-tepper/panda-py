@@ -24,7 +24,9 @@ Force::Force(const double &k_p, const double &k_i, const Vector7d &damping,
       K_d_(damping),
       K_d_target_(damping),
       threshold_(threshold),
-      threshold_target_(threshold){};
+      threshold_target_(threshold) {
+  f_e_integral.resize(6);
+};
 
 franka::Torques Force::step(const franka::RobotState &robot_state,
                             franka::Duration &duration) {

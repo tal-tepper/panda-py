@@ -9,6 +9,7 @@
 #include "controllers/applied_torque.h"
 #include "controllers/cartesian_impedance.h"
 #include "controllers/force.h"
+#include "controllers/hybrid_force_motion.h"
 #include "controllers/integrated_velocity.h"
 #include "controllers/joint_position.h"
 #include "kinematics/fk.h"
@@ -88,14 +89,18 @@ PYBIND11_MODULE(_core, m) {
 
   py::class_<motion::CartesianTrajectory>(m, "CartesianTrajectory")
       .def(py::init<const std::vector<Eigen::Matrix<double, 3, 1>> &,
-                    const std::vector<Eigen::Matrix<double, 4, 1>> &, double,
-                    double, double>(),
+                    const std::vector<Eigen::Matrix<double, 4, 1>> &,
+                    double,
+                    double,
+                    double>(),
            py::arg("positions"), py::arg("orientations"),
            py::arg("speed_factor") = motion::kDefaultCartesianSpeedFactor,
            py::arg("max_deviation") = 0,
            py::arg("timeout") = motion::kDefaultTimeout)
-      .def(py::init<const std::vector<Eigen::Matrix<double, 4, 4>> &, double,
-                    double, double>(),
+      .def(py::init<const std::vector<Eigen::Matrix<double, 4, 4>> &,
+                    double,
+                    double,
+                    double>(),
            py::arg("poses"),
            py::arg("speed_factor") = motion::kDefaultCartesianSpeedFactor,
            py::arg("max_deviation") = 0,
@@ -106,7 +111,8 @@ PYBIND11_MODULE(_core, m) {
       .def("get_position",
            &motion::CartesianTrajectory::getPosition, py::arg("time"))
       .def("get_orientation",
-           &motion::CartesianTrajectory::getOrientation, py::arg("time"));
+           &motion::CartesianTrajectory::getOrientation,
+           py::arg("time"));
 
   py::class_<PandaContext>(m, "PandaContext")
       .def("ok", &PandaContext::ok)
@@ -186,10 +192,13 @@ PYBIND11_MODULE(_core, m) {
       .def(
           "move_to_pose",
           py::overload_cast<std::vector<Eigen::Vector3d> &,
-                            std::vector<Eigen::Matrix<double, 4, 1>> &, double,
+                            std::vector<Eigen::Matrix<double, 4, 1>> &,
+                            double,
                             const Eigen::Matrix<double, 6, 6> &,
                             const double &,
-                            const double &, double, double>(
+                            const double &,
+                            double,
+                            double>(
               &Panda::moveToPose),
           py::call_guard<py::gil_scoped_release>(), py::arg("positions"),
           py::arg("orientations"),
@@ -209,11 +218,13 @@ PYBIND11_MODULE(_core, m) {
                )delim")
       .def(
           "move_to_pose",
-          py::overload_cast<const Eigen::Vector3d &,
-                            const Eigen::Matrix<double, 4, 1> &, double,
+          py::overload_cast<const Eigen::Vector3d &, const Eigen::Matrix<double, 4, 1> &,
+                            double,
                             const Eigen::Matrix<double, 6, 6> &,
                             const double &,
-                            const double &, double, double>(
+                            const double &,
+                            double,
+                            double>(
               &Panda::moveToPose),
           py::call_guard<py::gil_scoped_release>(), py::arg("position"),
           py::arg("orientation"),
@@ -233,7 +244,9 @@ PYBIND11_MODULE(_core, m) {
                              double,
                              const Eigen::Matrix<double, 6, 6> &,
                              const double &,
-                             const double &, double, double>(&Panda::moveToPose),
+                             const double &,
+                             double,
+                             double>(&Panda::moveToPose),
            py::call_guard<py::gil_scoped_release>(), py::arg("pose"),
            py::arg("speed_factor") = motion::kDefaultCartesianSpeedFactor,
            py::arg("impedance") = controllers::CartesianTrajectory::kDefaultImpedance,
@@ -248,10 +261,13 @@ PYBIND11_MODULE(_core, m) {
                )delim")
       .def(
           "move_to_pose",
-          py::overload_cast<const Eigen::Matrix<double, 4, 4> &, double,
+          py::overload_cast<const Eigen::Matrix<double, 4, 4> &,
+                            double,
                             const Eigen::Matrix<double, 6, 6> &,
                             const double &,
-                            const double &, double, double>(
+                            const double &,
+                            double,
+                            double>(
               &Panda::moveToPose),
           py::call_guard<py::gil_scoped_release>(), py::arg("pose"),
           py::arg("speed_factor") = motion::kDefaultCartesianSpeedFactor,
@@ -331,7 +347,8 @@ PYBIND11_MODULE(_core, m) {
            py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"));
 
   py::class_<CartesianImpedance, TorqueController,
-             std::shared_ptr<CartesianImpedance>>(m, "CartesianImpedance")
+             std::shared_ptr<CartesianImpedance>>(
+      m, "CartesianImpedance")
       .def(py::init<const Eigen::Matrix<double, 6, 6> &, const double &,
                     const double &,
                     const double &>(), /*py::keep_alive<1, 0>(),*/
@@ -366,6 +383,33 @@ PYBIND11_MODULE(_core, m) {
       .def("set_filter", &CartesianImpedance::setFilter,
            py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"));
 
+  py::class_<controllers::CartesianTrajectory, TorqueController,
+             std::shared_ptr<controllers::CartesianTrajectory>>(
+      m, "CartesianTrajectoryController")
+      .def(py::init<std::shared_ptr<motion::CartesianTrajectory>, const Vector7d &,
+                    const Eigen::Matrix<double, 6, 6> &, const double &,
+                    const double &, const double, const double>(),
+           py::arg("trajectory"), py::arg("q_init"),
+           py::arg("impedance") =
+               controllers::CartesianTrajectory::kDefaultImpedance,
+           py::arg("damping_ratio") =
+               controllers::CartesianTrajectory::kDefaultDampingRatio,
+           py::arg("nullspace_stiffness") =
+               controllers::CartesianTrajectory::kDefaultNullspaceStiffness,
+           py::arg("dq_threshold") =
+               controllers::CartesianTrajectory::kDefaultDqThreshold,
+           py::arg("filter_coeff") =
+               controllers::CartesianTrajectory::kDefaultFilterCoeff);
+
+  py::class_<controllers::JointTrajectory, TorqueController,
+             std::shared_ptr<controllers::JointTrajectory>>(
+      m, "JointTrajectoryController")
+      .def(py::init<std::shared_ptr<motion::JointTrajectory>, const Vector7d &,
+                    const Vector7d &>(),
+           py::arg("trajectory"),
+           py::arg("stiffness") = controllers::JointTrajectory::kDefaultStiffness,
+           py::arg("damping") = controllers::JointTrajectory::kDefaultDamping);
+
   py::class_<AppliedTorque, TorqueController, std::shared_ptr<AppliedTorque>>(
       m, "AppliedTorque")
       .def(py::init<const Vector7d &,
@@ -392,7 +436,8 @@ PYBIND11_MODULE(_core, m) {
       .def("set_filter", &AppliedForce::setFilter,
            py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"));
 
-  py::class_<Force, TorqueController, std::shared_ptr<Force>>(m, "Force")
+  py::class_<Force, TorqueController, std::shared_ptr<Force>>(
+      m, "Force")
       .def(py::init<const double &, const double &, const Vector7d &,
                     const double &,
                     const double &>(), /*py::keep_alive<1, 0>(),*/
@@ -410,4 +455,49 @@ PYBIND11_MODULE(_core, m) {
       .def("set_filter", &Force::setFilter,
            py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"))
       .def_property_readonly("name", &Force::name);
+
+  py::class_<controllers::HybridForceMotion, TorqueController,
+             std::shared_ptr<controllers::HybridForceMotion>>(
+      m, "HybridForceMotion")
+      .def(py::init<std::shared_ptr<motion::CartesianTrajectory>, const Vector7d &,
+                    const Eigen::Matrix<double, 6, 6> &, const double &,
+                    const double &, const double &, const double &,
+                    const Eigen::Matrix<bool, 6, 1> &, const double>(),
+           py::arg("trajectory"), py::arg("q_init"),
+           py::arg("impedance") =
+               controllers::HybridForceMotion::kDefaultImpedance,
+           py::arg("damping_ratio") =
+               controllers::HybridForceMotion::kDefaultDampingRatio,
+           py::arg("nullspace_stiffness") =
+               controllers::HybridForceMotion::kDefaultNullspaceStiffness,
+           py::arg("force_k_p") =
+               controllers::HybridForceMotion::kDefaultForceProportionalGain,
+           py::arg("force_k_i") =
+               controllers::HybridForceMotion::kDefaultForceIntegralGain,
+           py::arg("selection") =
+               controllers::HybridForceMotion::kDefaultSelection,
+           py::arg("filter_coeff") =
+               controllers::HybridForceMotion::kDefaultFilterCoeff)
+      .def("set_control", &controllers::HybridForceMotion::setControl,
+           py::call_guard<py::gil_scoped_release>(), py::arg("position"),
+           py::arg("orientation"), py::arg("force"),
+           py::arg("q_nullspace") = kJointPositionStart)
+      .def("set_impedance", &controllers::HybridForceMotion::setImpedance,
+           py::call_guard<py::gil_scoped_release>(), py::arg("impedance"))
+      .def("set_damping_ratio", &controllers::HybridForceMotion::setDampingRatio,
+           py::call_guard<py::gil_scoped_release>(), py::arg("damping_ratio"))
+      .def("set_nullspace_stiffness",
+           &controllers::HybridForceMotion::setNullspaceStiffness,
+           py::call_guard<py::gil_scoped_release>(),
+           py::arg("nullspace_stiffness"))
+      .def("set_force_proportional_gain",
+           &controllers::HybridForceMotion::setForceProportionalGain,
+           py::call_guard<py::gil_scoped_release>(), py::arg("k_p"))
+      .def("set_force_integral_gain",
+           &controllers::HybridForceMotion::setForceIntegralGain,
+           py::call_guard<py::gil_scoped_release>(), py::arg("k_i"))
+      .def("set_selection", &controllers::HybridForceMotion::setSelection,
+           py::call_guard<py::gil_scoped_release>(), py::arg("selection"))
+      .def("set_filter", &controllers::HybridForceMotion::setFilter,
+           py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"));
 }
