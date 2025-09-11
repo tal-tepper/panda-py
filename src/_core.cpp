@@ -459,11 +459,9 @@ PYBIND11_MODULE(_core, m) {
   py::class_<controllers::HybridForceMotion, TorqueController,
              std::shared_ptr<controllers::HybridForceMotion>>(
       m, "HybridForceMotion")
-      .def(py::init<std::shared_ptr<motion::CartesianTrajectory>, const Vector7d &,
-                    const Eigen::Matrix<double, 6, 6> &, const double &,
+      .def(py::init<const Eigen::Matrix<double, 6, 6> &, const double &,
                     const double &, const double &, const double &,
                     const Eigen::Matrix<bool, 6, 1> &, const double>(),
-           py::arg("trajectory"), py::arg("q_init"),
            py::arg("impedance") =
                controllers::HybridForceMotion::kDefaultImpedance,
            py::arg("damping_ratio") =

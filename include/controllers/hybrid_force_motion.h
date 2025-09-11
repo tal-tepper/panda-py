@@ -12,8 +12,6 @@ namespace controllers {
 class HybridForceMotion : public TorqueController {
  public:
   HybridForceMotion(
-      std::shared_ptr<motion::CartesianTrajectory> trajectory,
-      const Vector7d& q_init,
       const Eigen::Matrix<double, 6, 6>& impedance =
           kDefaultImpedance,
       const double& damping_ratio = kDefaultDampingRatio,
@@ -59,8 +57,6 @@ class HybridForceMotion : public TorqueController {
   void _updateFilter();
   void _computeDamping();
 
-  std::shared_ptr<motion::CartesianTrajectory> traj_;
-  Vector7d q_init_;
   double dq_threshold_;
 
   Eigen::Matrix<double, 6, 6> K_p_, K_d_, K_p_target_, K_d_target_;

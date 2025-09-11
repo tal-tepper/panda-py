@@ -19,8 +19,6 @@ const double HybridForceMotion::kDefaultFilterCoeff = 1.0;
 const double HybridForceMotion::kDefaultDqThreshold = 1e-3;
 
 HybridForceMotion::HybridForceMotion(
-    std::shared_ptr<motion::CartesianTrajectory> trajectory,
-    const Vector7d& q_init,
     const Eigen::Matrix<double, 6, 6>& impedance,
     const double& damping_ratio,
     const double& nullspace_stiffness,
@@ -28,9 +26,7 @@ HybridForceMotion::HybridForceMotion(
     const double& force_k_i,
     const Eigen::Matrix<bool, 6, 1>& selection,
     const double& filter_coeff)
-    : traj_(trajectory),
-      q_init_(q_init),
-      dq_threshold_(kDefaultDqThreshold) {
+    : dq_threshold_(kDefaultDqThreshold) {
   K_p_ = impedance;
   K_p_target_ = impedance;
   damping_ratio_ = damping_ratio;
@@ -52,14 +48,19 @@ void HybridForceMotion::_computeDamping() {
 }
 
 franka::Torques HybridForceMotion::step(const franka::RobotState& robot_state, franka::Duration& duration) {
-  auto position = traj_->getPosition(getTime());
-  auto orientation = traj_->getOrientation(getTime());
-  // In a real scenario, the target force would likely come from a trajectory or user input
-  Eigen::Matrix<double, 6, 1> force_target; 
-  force_target.setZero();
-  force_target(2) = -10; // Example: 10N downwards force
-
-  setControl(position, orientation, force_target, q_init_);
+  mux_.lock();
+  _updateFilter();
+  Eigen::Matrix<double, 6, 6> K_p = K_p_;
+  Eigen::Matrix<double, 6, 6> K_d = K_d_;
+  double nullspace_stiffness = nullspace_stiffness_;
+  Eigen::Vector3d position_d = position_d_;
+  Eigen::Quaterniond orientation_d = orientation_d_;
+  Vector7d q_nullspace_d = q_nullspace_d_;
+  Eigen::Matrix<double, 6, 1> f_d = f_d_;
+  double k_p = k_p_;
+  double k_i = k_i_;
+  Eigen::Matrix<bool, 6, 1> selection = selection_;
+  mux_.unlock();
 
   // get state variables
   std::array<double, 7> coriolis_array = model_->coriolis(robot_state);
@@ -76,11 +77,11 @@ franka::Torques HybridForceMotion::step(const franka::RobotState& robot_state, f
 
   // compute motion error
   Eigen::Matrix<double, 6, 1> error;
-  error.head(3) << current_position - position_d_;
-  if (orientation_d_.coeffs().dot(current_orientation.coeffs()) < 0.0) {
+  error.head(3) << current_position - position_d;
+  if (orientation_d.coeffs().dot(current_orientation.coeffs()) < 0.0) {
     current_orientation.coeffs() << -current_orientation.coeffs();
   }
-  Eigen::Quaterniond error_quaternion(current_orientation.inverse() * orientation_d_);
+  Eigen::Quaterniond error_quaternion(current_orientation.inverse() * orientation_d);
   error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
   error.tail(3) << -transform.rotation() * error.tail(3);
 
@@ -90,16 +91,16 @@ franka::Torques HybridForceMotion::step(const franka::RobotState& robot_state, f
   Eigen::MatrixXd j_t = jacobian.transpose();
   Eigen::MatrixXd j_inv = j_t.completeOrthogonalDecomposition().pseudoInverse();
   Eigen::Matrix<double, 6, 1> f_measured = j_inv * (tau_measured - gravity);
-  Eigen::Matrix<double, 6, 1> f_error = f_d_ - f_measured;
+  Eigen::Matrix<double, 6, 1> f_error = f_d - f_measured;
   force_error_integral_ += duration.toSec() * f_error;
 
   // Hybrid control law
   Eigen::Matrix<double, 6, 1> command;
   for (int i = 0; i < 6; ++i) {
-    if (selection_(i)) { // Force control
-      command(i) = f_d_(i) + k_p_ * f_error(i) + k_i_ * force_error_integral_(i);
+    if (selection(i)) { // Force control
+      command(i) = f_d(i) + k_p * f_error(i) + k_i * force_error_integral_(i);
     } else { // Position control
-      command(i) = -K_p_(i, i) * error(i) - K_d_(i, i) * (jacobian * dq)(i);
+      command(i) = -K_p(i, i) * error(i) - K_d(i, i) * (jacobian * dq)(i);
     }
   }
 
@@ -109,23 +110,18 @@ franka::Torques HybridForceMotion::step(const franka::RobotState& robot_state, f
   pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
 
   tau_task << jacobian.transpose() * command;
-  tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) - jacobian.transpose() * jacobian_transpose_pinv) * (nullspace_stiffness_ * (q_nullspace_d_ - q) - (2.0 * sqrt(nullspace_stiffness_)) * dq);
+  tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) - jacobian.transpose() * jacobian_transpose_pinv) * (nullspace_stiffness * (q_nullspace_d - q) - (2.0 * sqrt(nullspace_stiffness)) * dq);
   tau_d << tau_task + tau_nullspace + coriolis;
 
-  franka::Torques torques = VectorToArray<7>(tau_d);
-
-  if (getTime() > traj_->getDuration()) {
-      bool at_rest = true;
-      for (auto dq_i : robot_state.dq) {
-          if (std::abs(dq_i) > dq_threshold_) {
-              at_rest = false;
-          }
-      }
-      if (at_rest) {
-          torques.motion_finished = true;
-      }
+  Eigen::Matrix<double, 6, 1> f_final = j_inv * (tau_d - gravity);
+  if (f_final[2] < f_d[2]) 
+  {
+    tau_d -= jacobian.transpose().row(2) * (f_final[2] - f_d[2]);
   }
+  std::cout << "f_final: " << f_final.transpose() << " f_d: " << f_d.transpose() << std::endl;
 
+  franka::Torques torques = VectorToArray<7>(tau_d);
+  torques.motion_finished = motion_finished_;
   return torques;
 }
 
