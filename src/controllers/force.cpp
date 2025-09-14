@@ -51,18 +51,43 @@ franka::Torques Force::step(const franka::RobotState &robot_state,
   mux_.unlock();
 
   // Abort condition
+  Eigen::Vector3d pos_error = position_init_ - position;
   if (getTime() > 0 && (position - position_init_).norm() > threshold) {
     throw franka::Exception(name() + ": Distance threshold exceeded.");
   }
 
-  Eigen::VectorXd tau_d(7), force_torque_d(6), tau_ext(7);
+  Eigen::VectorXd tau_d(7), force_torque_d(6), tau_ext(7),tau_error(7);
   force_torque_d.setZero();
   force_torque_d.head(3) = f;
   tau_ext << tau_measured - gravity - tau_ext_init_;
   tau_d << jacobian.transpose() * force_torque_d;
-  tau_error_integral_ += duration.toSec() * (tau_d - tau_ext);
+  tau_error = tau_d - tau_ext;
+  tau_error_integral_ += duration.toSec() * (tau_error);
+  // std::cout << "tau_error:" << tau_error.transpose() <<std::endl;
+  // std::cout << "tau_d:" << tau_d.transpose() <<std::endl;
   // FF + PI control
-  tau_d << tau_d + k_p * (tau_d - tau_ext) + k_i * tau_error_integral_ - K_d.asDiagonal() * dq;
+  // tau_d << tau_d + k_p * (tau_error) + k_i * tau_error_integral_ - K_d.asDiagonal() * dq;
+  
+  // std::cout << "tau_ext:" << tau_ext.transpose() << std::endl;
+  // std::cout << "tau_measured:" << tau_measured.transpose() << std::endl;
+  // std::cout << "tau_ext_init_:" << tau_ext_init_.transpose() << std::endl;
+  Eigen::VectorXd f_e(6), force_measured(6),f_e_z(6),pos_e_xy(6);
+  Eigen::MatrixXd j_t = jacobian.transpose();
+  Eigen::MatrixXd j_inv = j_t.completeOrthogonalDecomposition().pseudoInverse();
+  force_measured = j_inv * (tau_measured-gravity- tau_ext_init_);
+  f_e_z.setZero();
+  f_e_z[2] = force_torque_d[2] - force_measured[2];//probably should save the initial force mesaured
+  f_e_z[0] = 1000*pos_error[0];
+  f_e_z[1] = 1000*pos_error[1];
+  // force_torque_d = force_measured;
+  // force_torque_d[2] = f[2];
+  
+  f_e_integral += duration.toSec() * f_e_z;
+
+  tau_d << jacobian.transpose() * (force_torque_d + k_p * f_e_z) - K_d.asDiagonal() * dq; // + k_i * f_e_integral
+  // std::cout << "f_e_z:" << f_e_z.transpose() <<std::endl;
+  // std::cout << "force_measured:" << force_measured.transpose() << std::endl;
+  // std::cout << "force_torque_d:" << force_torque_d.transpose() << std::endl;
 
   franka::Torques torques = VectorToArray<7>(tau_d);
   torques.motion_finished = motion_finished_;
@@ -122,13 +147,19 @@ void Force::start(const franka::RobotState &robot_state,
   // Bias torque sensor
   std::array<double, 7> gravity_array = model->gravity(robot_state);
   std::array<double, 7> tau_measured_array = robot_state.tau_J;
+  std::array<double, 7> tau_ext_hat_filtered = robot_state.tau_ext_hat_filtered;
   Eigen::Map<Vector7d> initial_tau_measured(
       tau_measured_array.data());
   Eigen::Map<Vector7d> initial_gravity(gravity_array.data());
+  Eigen::Map<Vector7d> initial_tau_ext_hat_filtered(
+      tau_ext_hat_filtered.data());
   tau_ext_init_ = initial_tau_measured - initial_gravity;
+  // tau_ext_init_ = initial_tau_ext_hat_filtered;
+  // std::cout << "tau_ext_init_" << tau_ext_init_.transpose() << std::endl;
 
   // init integrator
   tau_error_integral_.setZero();
+  f_e_integral.setZero();
 }
 
 void Force::stop(const franka::RobotState &robot_state,

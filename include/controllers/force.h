@@ -36,6 +36,7 @@ class Force : public TorqueController {
 
  private:
   Vector7d tau_ext_init_, tau_error_integral_, K_d_, K_d_target_;
+  Vector6d f_e_integral;
   Eigen::Vector3d f_d_, f_d_target_, position_init_;
   double filter_coeff_, k_p_, k_i_, k_p_target_, k_i_target_, threshold_,
       threshold_target_;

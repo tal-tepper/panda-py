@@ -53,13 +53,16 @@ panda-release-control = "panda_py.cli:release_control"
 
 [tool.cibuildwheel]
 manylinux-x86_64-image = "manylinux2014"
-build = [ "cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*", "cp312-*",]
+build = [  "cp312-*",]
 skip = [ "pp*", "*musllinux*",]
 environment = "LIBFRANKA_VER=0.9.2"
 
 [tool.cibuildwheel.linux]
 before-all = [ "./bin/before_install_centos.sh",]
 archs = [ "x86_64",]
+
+[tool.scikit-build]
+logging.level = "DEBUG"
 
 [tool.scikit-build.cmake]
 build-type = "Release"
@@ -68,4 +71,4 @@ build-type = "Release"
 packages = ["src/panda_py"]
 
 [tool.scikit-build.cmake.define]
-VACUUM_GRIPPER = "ON"
+VACUUM_GRIPPER = "OFF"

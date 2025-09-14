@@ -15,7 +15,27 @@ endif()
 
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
-find_package(Franka REQUIRED)
+find_package(Franka 0.9.2 REQUIRED)
+
+get_target_property(_franka_location Franka::Franka LOCATION)
+get_target_property(_franka_include_dirs Franka::Franka INTERFACE_INCLUDE_DIRECTORIES)
+message(STATUS "Franka::Franka library = ${_franka_location}")
+message(STATUS "Franka::Franka includes = ${_franka_include_dirs}")
+
+
+if(Franka_FOUND)
+  message(STATUS "[OK] Franka was found.")
+else()
+  message(FATAL_ERROR "[FAIL] Franka not found!")
+endif()
+
+# Print all CMake variables containing 'franka'
+get_cmake_property(_vars VARIABLES)
+foreach(_var ${_vars})
+  if(_var MATCHES ".*[Ff]ranka.*")
+    message(STATUS "${_var} = ${${_var}}")
+  endif()
+endforeach()
 find_package(
   Python
   COMPONENTS Interpreter Development.Module

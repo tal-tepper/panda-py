@@ -2,6 +2,7 @@
 #include <Eigen/Dense>
 
 using Vector7d = Eigen::Matrix<double, 7, 1>;
+using Vector6d = Eigen::Matrix<double, 6, 1>;
 
 const double kTauJMaxData[7] = {87, 87, 87, 87, 12, 12, 12};
 const Vector7d kTauJMax(kTauJMaxData);

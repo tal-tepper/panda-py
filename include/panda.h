@@ -120,6 +120,7 @@ class Panda {
   void setDefaultBehavior();
   void raiseError();
   void recover();
+  void update_robot_state();
   void teaching_mode(bool active, const Vector7d &damping = kDefaultTeachingDamping);
 
   const std::string name_;

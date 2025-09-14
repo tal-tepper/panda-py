@@ -278,6 +278,9 @@ PYBIND11_MODULE(_core, m) {
                into the starting position (cf. :py:obj:`constants.JOINT_POSITION_START`).
                )delim")
       .def("set_default_behavior", &Panda::setDefaultBehavior)
+      .def("update_robot_state", &Panda::update_robot_state, R"delim(
+          Update the internal robot state by reading once from the robot.
+      )delim")
       .def("raise_error", &Panda::raiseError, R"delim(
           Raises a `RuntimeError` in Python when the robot has an active error.
           As panda-py controllers run asynchroneously, encountered errors don't
