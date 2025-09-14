@@ -1,6 +1,6 @@
 """
 Demonstrates the use of the HybridForceMotion controller to move the
-end-effector along a trajectory loaded from a CSV file while applying a
+end-effector along a trajectory loaded from a .npy file while applying a
 constant force.
 """
 import sys
@@ -9,60 +9,33 @@ import panda_py
 from panda_py import controllers
 
 if __name__ == '__main__':
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 5:
         raise RuntimeError(
-            f'Usage: python {sys.argv[0]} <robot-hostname> <path-to-csv> <force-z>'
+            f'Usage: python {sys.argv[0]} <robot-hostname> <path-to-npy> <primitive-name> <force-z>'
         )
 
     # Arguments
     hostname = sys.argv[1]
-    csv_path = sys.argv[2]
-    force_z = float(sys.argv[3])
-
-    # --- Create a dummy trajectory file for demonstration ---
-    try:
-        panda_conn = panda_py.Panda(hostname)
-        panda_conn.move_to_start()
-        start_pose = panda_conn.get_pose()
-        
-        # 10cm downwards trajectory
-        trajectory_poses = []
-        for i in range(100):
-            pose = start_pose.copy()
-            pose[2, 3] -= 0.1 * (i / 99.0)
-            trajectory_poses.append(pose)
-
-        # Convert to position and quaternion
-        trajectory_data = []
-        for pose in trajectory_poses:
-            pos = pose[:3, 3]
-            quat = panda_py.get_orientation_from_matrix(pose)
-            trajectory_data.append(np.concatenate([pos, quat]))
-
-        np.savetxt(csv_path, trajectory_data, delimiter=',')
-        print(f'Created dummy trajectory at {csv_path}')
-    except Exception as e:
-        print(f'Could not create dummy trajectory file: {e}')
-        print('Please ensure the robot is connected and the path is valid.')
-
-    # ------------------------------------------------------
+    npy_path = sys.argv[2]
+    primitive_name = sys.argv[3]
+    force_z = float(sys.argv[4])
 
     # Connect to the robot
     panda = panda_py.Panda(hostname)
     panda.move_to_start()
 
-    # Load trajectory from CSV
+    # Load trajectory from .npy file
     try:
-        trajectory = np.loadtxt(csv_path, delimiter=',')
-        print(f'Loaded {len(trajectory)} waypoints from {csv_path}')
-    except IOError:
-        print(f'Error: Could not find or read trajectory file at {csv_path}')
+        loaded_data = np.load(npy_path, allow_pickle=True).item()
+        trajectory_q = loaded_data[primitive_name]['q']
+        trajectory_dq = loaded_data[primitive_name]['dq']
+        print(f'Loaded {len(trajectory_q)} waypoints for primitive '{primitive_name}' from {npy_path}')
+    except (IOError, KeyError) as e:
+        print(f'Error: Could not find, read or parse trajectory file at {npy_path}: {e}')
         sys.exit(1)
 
     # Configure the HybridForceMotion controller
-    # Enable force control along the Z-axis
-    selection = np.array([0, 0, 1, 0, 0, 0], dtype=bool)
-    ctrl = controllers.HybridForceMotion(selection=selection)
+    ctrl = controllers.HybridForceMotion()
 
     # Define the desired force
     force = np.zeros(6)
@@ -74,18 +47,17 @@ if __name__ == '__main__':
 
     # Loop through the trajectory
     with panda.create_context(frequency=1000) as ctx:
-        for i, waypoint in enumerate(trajectory):
+        for i in range(len(trajectory_q)):
             if not ctx.ok():
                 break
             
-            position = waypoint[:3]
-            orientation = waypoint[3:]
-            
-            ctrl.set_control(position, orientation, force)
+            q_d = trajectory_q[i]
+            dq_d = trajectory_dq[i]
+            ctrl.set_control(q_d, force, dq_d)
 
             # Optional: print progress
             if i % 100 == 0:
-                print(f'Waypoint {i}/{len(trajectory)}')
+                print(f'Waypoint {i}/{len(trajectory_q)}')
 
     print("Trajectory finished. Stopping controller.")
     panda.stop_controller()

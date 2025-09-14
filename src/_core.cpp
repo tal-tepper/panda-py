@@ -459,43 +459,18 @@ PYBIND11_MODULE(_core, m) {
   py::class_<controllers::HybridForceMotion, TorqueController,
              std::shared_ptr<controllers::HybridForceMotion>>(
       m, "HybridForceMotion")
-      .def(py::init<const Eigen::Matrix<double, 6, 6> &, const double &,
-                    const double &, const double &, const double &,
-                    const Eigen::Matrix<bool, 6, 1> &, const double>(),
-           py::arg("impedance") =
-               controllers::HybridForceMotion::kDefaultImpedance,
-           py::arg("damping_ratio") =
-               controllers::HybridForceMotion::kDefaultDampingRatio,
-           py::arg("nullspace_stiffness") =
-               controllers::HybridForceMotion::kDefaultNullspaceStiffness,
-           py::arg("force_k_p") =
-               controllers::HybridForceMotion::kDefaultForceProportionalGain,
-           py::arg("force_k_i") =
-               controllers::HybridForceMotion::kDefaultForceIntegralGain,
-           py::arg("selection") =
-               controllers::HybridForceMotion::kDefaultSelection,
-           py::arg("filter_coeff") =
-               controllers::HybridForceMotion::kDefaultFilterCoeff)
+      .def(py::init<const Vector7d &, const Vector7d &, const double>(),
+           py::arg("stiffness") = controllers::HybridForceMotion::kDefaultStiffness,
+           py::arg("damping") = controllers::HybridForceMotion::kDefaultDamping,
+           py::arg("filter_coeff") = controllers::HybridForceMotion::kDefaultFilterCoeff)
       .def("set_control", &controllers::HybridForceMotion::setControl,
            py::call_guard<py::gil_scoped_release>(), py::arg("position"),
-           py::arg("orientation"), py::arg("force"),
-           py::arg("q_nullspace") = kJointPositionStart)
-      .def("set_impedance", &controllers::HybridForceMotion::setImpedance,
-           py::call_guard<py::gil_scoped_release>(), py::arg("impedance"))
-      .def("set_damping_ratio", &controllers::HybridForceMotion::setDampingRatio,
-           py::call_guard<py::gil_scoped_release>(), py::arg("damping_ratio"))
-      .def("set_nullspace_stiffness",
-           &controllers::HybridForceMotion::setNullspaceStiffness,
-           py::call_guard<py::gil_scoped_release>(),
-           py::arg("nullspace_stiffness"))
-      .def("set_force_proportional_gain",
-           &controllers::HybridForceMotion::setForceProportionalGain,
-           py::call_guard<py::gil_scoped_release>(), py::arg("k_p"))
-      .def("set_force_integral_gain",
-           &controllers::HybridForceMotion::setForceIntegralGain,
-           py::call_guard<py::gil_scoped_release>(), py::arg("k_i"))
-      .def("set_selection", &controllers::HybridForceMotion::setSelection,
-           py::call_guard<py::gil_scoped_release>(), py::arg("selection"))
+           py::arg("force") = controllers::HybridForceMotion::kDefaultForce,
+           py::arg("velocity") = controllers::HybridForceMotion::kDefaultDqd)
+      .def("set_stiffness", &controllers::HybridForceMotion::setStiffness,
+           py::call_guard<py::gil_scoped_release>(), py::arg("stiffness"))
+      .def("set_damping", &controllers::HybridForceMotion::setDamping,
+           py::call_guard<py::gil_scoped_release>(), py::arg("damping"))
       .def("set_filter", &controllers::HybridForceMotion::setFilter,
            py::call_guard<py::gil_scoped_release>(), py::arg("filter_coeff"));
 }
