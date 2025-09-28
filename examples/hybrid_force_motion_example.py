@@ -4,36 +4,45 @@ end-effector along a trajectory loaded from a .npy file while applying a
 constant force.
 """
 import sys
+from time import sleep
 import numpy as np
 import panda_py
 from panda_py import controllers
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        raise RuntimeError(
-            f'Usage: python {sys.argv[0]} <robot-hostname> <path-to-npy> <primitive-name> <force-z>'
-        )
+    # if len(sys.argv) < 5:
+    #     raise RuntimeError(
+    #         f'Usage: python {sys.argv[0]} <robot-hostname> <path-to-npy> <primitive-name> <force-z>'
+    #     )
 
     # Arguments
-    hostname = sys.argv[1]
-    npy_path = sys.argv[2]
-    primitive_name = sys.argv[3]
-    force_z = float(sys.argv[4])
-
-    # Connect to the robot
-    panda = panda_py.Panda(hostname)
-    panda.move_to_start()
-
+    # hostname = sys.argv[1]
+    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_poses.npy'#sys.argv[1]
+    primitive_name = 'back_and_forth_1'#'circular_1'#'try'#'circles_1'#'roll'#'line'#sys.argv[2]
+    force_z = float(-3.8)
+    hostname = '172.16.0.2'
+    username = 'tamarlab'
+    password = 'Panda468#'
+    
     # Load trajectory from .npy file
     try:
         loaded_data = np.load(npy_path, allow_pickle=True).item()
+        print(f'Available primitives in the file: {list(loaded_data.keys())}')
         trajectory_q = loaded_data[primitive_name]['q']
         trajectory_dq = loaded_data[primitive_name]['dq']
-        print(f'Loaded {len(trajectory_q)} waypoints for primitive '{primitive_name}' from {npy_path}')
+        print(f'Loaded {len(trajectory_q)} waypoints for primitive {primitive_name} from {npy_path}')
     except (IOError, KeyError) as e:
         print(f'Error: Could not find, read or parse trajectory file at {npy_path}: {e}')
         sys.exit(1)
-
+        
+    # Connect to the robot
+    desk = panda_py.Desk(hostname, username, password)
+    desk.activate_fci()
+    panda = panda_py.Panda(hostname)
+    panda.move_to_joint_position(trajectory_q[0])
+    print(f'q0:{trajectory_q[0]}')
+    print(f'q-:{trajectory_q[-1]}')
+    sleep(3)
     # Configure the HybridForceMotion controller
     ctrl = controllers.HybridForceMotion()
 
@@ -54,10 +63,10 @@ if __name__ == '__main__':
             q_d = trajectory_q[i]
             dq_d = trajectory_dq[i]
             ctrl.set_control(q_d, force, dq_d)
-
+            # print(f'q:{panda.q}')
             # Optional: print progress
             if i % 100 == 0:
                 print(f'Waypoint {i}/{len(trajectory_q)}')
 
     print("Trajectory finished. Stopping controller.")
-    panda.stop_controller()
+    # panda.stop_controller()

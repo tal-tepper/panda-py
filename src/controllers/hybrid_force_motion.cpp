@@ -59,12 +59,15 @@ franka::Torques HybridForceMotion::step(const franka::RobotState &robot_state,
 
   // force limit
   Eigen::MatrixXd j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
-  Eigen::Matrix<double, 6, 1> f_final = j_inv * (tau_d - gravity);
+  Eigen::MatrixXd j_t_inv = jacobian.transpose().completeOrthogonalDecomposition().pseudoInverse();
+  Eigen::Matrix<double, 6, 1> f_final = j_t_inv * (tau_d);//
   if (f_final[2] < f_d[2]) 
   {
+    std::cout << "making change because f_final[2]: " << f_final[2] << " f_d[2]: " << f_d[2] << std::endl;
     tau_d -= jacobian.transpose().col(2) * (f_final[2] - f_d[2]);
+    std::cout << "f_final after change" << (j_t_inv * tau_d) << std::endl;
   }
-  std::cout << "f_final: " << f_final.transpose() << " f_d: " << f_d.transpose() << std::endl;
+  // std::cout << "f_final: " << f_final.transpose() <<  std::endl; //" f_d: " << f_d.transpose() << "final_f end:" << j_inv * (tau_d - gravity) <<
 
   franka::Torques torques = VectorToArray(tau_d);
   torques.motion_finished = motion_finished_;
@@ -85,6 +88,7 @@ void HybridForceMotion::setControl(const Vector7d &position, const Eigen::Matrix
   q_d_target_ = position;
   dq_d_target_ = velocity;
   f_d_target_ = force;
+  // std::cout << "Set target position: " << position.transpose() << " Set target force: " << force.transpose() << std::endl;
 }
 
 void HybridForceMotion::setStiffness(const Vector7d &stiffness) {

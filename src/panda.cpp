@@ -446,7 +446,3 @@ void Panda::setDefaultBehavior() {
   robot_->setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 }
 
-void Panda::update_robot_state() {
-  std::lock_guard<std::mutex> lock(mux_);
-  state_ = robot_->readOnce();
-}
