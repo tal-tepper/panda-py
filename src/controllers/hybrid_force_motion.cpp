@@ -60,12 +60,10 @@ franka::Torques HybridForceMotion::step(const franka::RobotState &robot_state,
   // force limit
   Eigen::MatrixXd j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
   Eigen::MatrixXd j_t_inv = jacobian.transpose().completeOrthogonalDecomposition().pseudoInverse();
-  Eigen::Matrix<double, 6, 1> f_final = j_t_inv * (tau_d);//
-  if (f_final[2] < f_d[2]) 
+  Eigen::Matrix<double, 6, 1> f_final = j_t_inv * (tau_d);
+  if (f_final.norm() > f_d[2])
   {
-    std::cout << "making change because f_final[2]: " << f_final[2] << " f_d[2]: " << f_d[2] << std::endl;
-    tau_d -= jacobian.transpose().col(2) * (f_final[2] - f_d[2]);
-    std::cout << "f_final after change" << (j_t_inv * tau_d) << std::endl;
+    tau_d += jacobian.transpose() * (f_final.normalized() * f_d[2] - f_final);
   }
   // std::cout << "f_final: " << f_final.transpose() <<  std::endl; //" f_d: " << f_d.transpose() << "final_f end:" << j_inv * (tau_d - gravity) <<
 
