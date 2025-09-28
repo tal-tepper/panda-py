@@ -53,23 +53,36 @@ franka::Torques HybridForceMotion::step(const franka::RobotState &robot_state,
   mux_.unlock();
 
   // PD control
-  Vector7d tau_pd = K_p.asDiagonal() * (q_d - q) + K_d.asDiagonal() * (dq_d - dq);
+  Vector7d tau_pd = K_p.asDiagonal() * (q_d - q) ;//+ K_d.asDiagonal() * (dq_d - dq)
   
   // add coriolis compensation
   Vector7d tau_d = tau_pd + coriolis;
 
   // force limit
-  Eigen::MatrixXd j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
-  Eigen::MatrixXd j_t_inv = jacobian.transpose().completeOrthogonalDecomposition().pseudoInverse();
-  Eigen::Matrix<double, 6, 1> f_final = j_t_inv * (tau_d);
-  double f_final_norm = f_final.norm();
+  // Eigen::Matrix<double, 6, 7> j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian.transpose(), Eigen::ComputeThinU | Eigen::ComputeThinV);
+  double tolerance = 1e-6;
+  Eigen::VectorXd singular_values_inv = svd.singularValues();
+  for (long i = 0; i < singular_values_inv.size(); ++i) {
+      if (singular_values_inv(i) > tolerance) {
+          singular_values_inv(i) = 1.0 / singular_values_inv(i);
+      } else {
+          singular_values_inv(i) = 0;
+      }
+  }
+  Eigen::MatrixXd j_t_inv = svd.matrixV() * singular_values_inv.asDiagonal() * svd.matrixU().transpose();
+  Eigen::Matrix<double, 6, 1> f_final = j_t_inv * tau_d;
+  double f_final_norm = f_final.head(3).norm();
   if (f_final_norm > std::abs(f_d[2]))
   {
+    std::cout << "Force limit reached, before change: " << f_final[0] << "," << f_final[1] << "," << f_final[2] << "   tau_d" << tau_d.transpose() << std::endl;
     if (f_final_norm > 1e-9) { // Avoid division by zero
       double scaling_factor = std::abs(f_d[2]) / f_final_norm;
       tau_d *= scaling_factor;
       f_final = j_t_inv * tau_d;
-      std::cout << "Force limit reached, limiting to: " << f_final[0] << ',' << f_final[1] << ',' << f_final[2] << std::endl;
+      std::cout << "Force limit reached, limiting to: " << f_final[0] << "," << f_final[1] << "," << f_final[2] << "  scaling factor:" << scaling_factor << "   tau_d" << tau_d.transpose() << std::endl;
+      std::cout << "j_t_inv dimensions: " << j_t_inv.rows() << "x" << j_t_inv.cols() << std::endl;
+      std::cout << "j_t_inv:" << j_t_inv << std::endl;
     }
   }
 
