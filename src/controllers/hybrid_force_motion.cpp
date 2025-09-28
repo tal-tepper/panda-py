@@ -1,6 +1,7 @@
 #include "controllers/hybrid_force_motion.h"
 
 #include <iostream>
+#include <cmath>
 
 #include "panda.h"
 
@@ -61,9 +62,9 @@ franka::Torques HybridForceMotion::step(const franka::RobotState &robot_state,
   Eigen::MatrixXd j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
   Eigen::MatrixXd j_t_inv = jacobian.transpose().completeOrthogonalDecomposition().pseudoInverse();
   Eigen::Matrix<double, 6, 1> f_final = j_t_inv * (tau_d);
-  if (f_final.norm() > f_d[2])
+  if (f_final.norm() > std::abs(f_d[2]))
   {
-    tau_d += jacobian.transpose() * (f_final.normalized() * f_d[2] - f_final);
+    tau_d += jacobian.transpose() * (f_final.normalized() * std::abs(f_d[2]) - f_final);
   }
   // std::cout << "f_final: " << f_final.transpose() <<  std::endl; //" f_d: " << f_d.transpose() << "final_f end:" << j_inv * (tau_d - gravity) <<
 
