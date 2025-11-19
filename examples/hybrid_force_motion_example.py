@@ -17,8 +17,8 @@ if __name__ == '__main__':
 
     # Arguments
     # hostname = sys.argv[1]
-    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_poses.npy'#sys.argv[1]
-    primitive_name = 'back_and_forth_1'#'circular_1'#'try'#'circles_1'#'roll'#'line'#sys.argv[2]
+    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_hard_shell_delicate.npy'#sys.argv[1]
+    primitive_name = 'try1'#'back_and_forth_1'#'circular_1'#'try'#'circles_1'#'roll'#'line'#sys.argv[2]
     force_z = float(-3.8)
     hostname = '172.16.0.2'
     username = 'tamarlab'
@@ -34,39 +34,44 @@ if __name__ == '__main__':
     except (IOError, KeyError) as e:
         print(f'Error: Could not find, read or parse trajectory file at {npy_path}: {e}')
         sys.exit(1)
-        
-    # Connect to the robot
-    desk = panda_py.Desk(hostname, username, password)
-    desk.activate_fci()
-    panda = panda_py.Panda(hostname)
-    panda.move_to_joint_position(trajectory_q[0])
-    print(f'q0:{trajectory_q[0]}')
-    print(f'q-:{trajectory_q[-1]}')
-    sleep(3)
-    # Configure the HybridForceMotion controller
-    ctrl = controllers.HybridForceMotion()
+    try:
+        # Connect to the robot
+        desk = panda_py.Desk(hostname, username, password)
+        desk.activate_fci()
+        panda = panda_py.Panda(hostname)
+        panda.move_to_joint_position(trajectory_q[0])
+        print(f'q0:{trajectory_q[0]}')
+        print(f'q-:{trajectory_q[-1]}')
+        sleep(2)
+        # Configure the HybridForceMotion controller
+        ctrl = controllers.HybridForceMotion()
 
-    # Define the desired force
-    force = np.zeros(6)
-    force[2] = force_z
+        # Define the desired force
+        force = np.zeros(6)
+        force[0] = force_z
+        force[1] = force_z
+        force[2] = force_z
 
-    # Start the controller
-    print("Starting HybridForceMotion controller...")
-    panda.start_controller(ctrl)
+        # Start the controller
+        print("Starting HybridForceMotion controller...")
+        panda.start_controller(ctrl)
 
-    # Loop through the trajectory
-    with panda.create_context(frequency=1000) as ctx:
-        for i in range(len(trajectory_q)):
-            if not ctx.ok():
-                break
-            
-            q_d = trajectory_q[i]
-            dq_d = trajectory_dq[i]
-            ctrl.set_control(q_d, force, dq_d)
-            # print(f'q:{panda.q}')
-            # Optional: print progress
-            if i % 100 == 0:
-                print(f'Waypoint {i}/{len(trajectory_q)}')
-
-    print("Trajectory finished. Stopping controller.")
-    # panda.stop_controller()
+        # Loop through the trajectory
+        with panda.create_context(frequency=1000) as ctx:
+            for i in range(len(trajectory_q)):
+                if not ctx.ok():
+                    break
+                
+                q_d = trajectory_q[i]
+                dq_d = trajectory_dq[i]
+                ctrl.set_control(q_d, force, dq_d)
+                # print(f'q:{panda.q}')
+                # Optional: print progress
+                if i % 100 == 0:
+                    print(f'Waypoint {i}/{len(trajectory_q)}')
+        panda.move_to_joint_position(trajectory_q[0])
+        print("Trajectory finished. Stopping controller.")
+    finally:
+        desk.deactivate_fci()
+        desk.release_control()
+    
