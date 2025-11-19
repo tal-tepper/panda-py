@@ -71,7 +71,7 @@ if __name__ == '__main__':
                 ctrl.set_control(q_d, force, dq_d)
                 
                 # Record actual joint position
-                actual_trajectory_q.append(panda.q.copy())
+                actual_trajectory_q.append(panda.get_position())
                 # print(f'q:{panda.q}')
                 # Optional: print progress
                 if i % 100 == 0:
@@ -89,25 +89,15 @@ if __name__ == '__main__':
     # panda.stop_controller()
     
     # Convert actual trajectory to numpy array
-    actual_trajectory_q = np.array(actual_trajectory_q)
+    actual_positions = np.array(actual_trajectory_q)
     
     # Compute forward kinematics for both trajectories to get Cartesian positions
     print("Computing forward kinematics for visualization...")
     
     # Get end-effector positions for planned trajectory
-    planned_positions = []
-    for q in trajectory_q[:len(actual_trajectory_q)]:
-        pose = panda.get_pose(q)  # Get 4x4 transformation matrix
-        planned_positions.append(pose[:3, 3])  # Extract position (x, y, z)
-    planned_positions = np.array(planned_positions)
+    planned_positions = np.array(loaded_data[primitive_name]['position'])
     
-    # Get end-effector positions for actual trajectory
-    actual_positions = []
-    for q in actual_trajectory_q:
-        pose = panda.get_pose(q)  # Get 4x4 transformation matrix
-        actual_positions.append(pose[:3, 3])  # Extract position (x, y, z)
-    actual_positions = np.array(actual_positions)
-    
+       
     # Create 3D plot with Plotly
     print("Creating 3D visualization...")
     fig = go.Figure()
