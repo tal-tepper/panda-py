@@ -165,3 +165,81 @@ if __name__ == '__main__':
     print(f"  Mean position error: {np.mean(position_errors)*1000:.3f} mm")
     print(f"  Max position error: {np.max(position_errors)*1000:.3f} mm")
     print(f"  Std position error: {np.std(position_errors)*1000:.3f} mm")
+    
+    # Create time vs position plot with subplots for x, y, z
+    print("Creating time series visualization...")
+    
+    # Create time array (assuming 1000 Hz control frequency)
+    dt = 0.001  # 1 ms per sample
+    time_planned = np.arange(len(planned_positions)) * dt
+    time_actual = np.arange(len(actual_positions)) * dt
+    
+    # Create figure with 3 subplots
+    from plotly.subplots import make_subplots
+    
+    fig2 = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=('X Position vs Time', 'Y Position vs Time', 'Z Position vs Time'),
+        vertical_spacing=0.08,
+        x_title='Time (s)',
+    )
+    
+    # X position subplot
+    fig2.add_trace(
+        go.Scatter(x=time_planned, y=planned_positions[:, 0], 
+                   mode='lines', name='Planned X', 
+                   line=dict(color='green', width=2)),
+        row=1, col=1
+    )
+    fig2.add_trace(
+        go.Scatter(x=time_actual, y=actual_positions[:, 0], 
+                   mode='lines', name='Actual X', 
+                   line=dict(color='red', width=2)),
+        row=1, col=1
+    )
+    
+    # Y position subplot
+    fig2.add_trace(
+        go.Scatter(x=time_planned, y=planned_positions[:, 1], 
+                   mode='lines', name='Planned Y', 
+                   line=dict(color='green', width=2)),
+        row=2, col=1
+    )
+    fig2.add_trace(
+        go.Scatter(x=time_actual, y=actual_positions[:, 1], 
+                   mode='lines', name='Actual Y', 
+                   line=dict(color='red', width=2)),
+        row=2, col=1
+    )
+    
+    # Z position subplot
+    fig2.add_trace(
+        go.Scatter(x=time_planned, y=planned_positions[:, 2], 
+                   mode='lines', name='Planned Z', 
+                   line=dict(color='green', width=2)),
+        row=3, col=1
+    )
+    fig2.add_trace(
+        go.Scatter(x=time_actual, y=actual_positions[:, 2], 
+                   mode='lines', name='Actual Z', 
+                   line=dict(color='red', width=2)),
+        row=3, col=1
+    )
+    
+    # Update axes labels
+    fig2.update_xaxes(title_text="Time (s)", row=3, col=1)
+    fig2.update_yaxes(title_text="X (m)", row=1, col=1)
+    fig2.update_yaxes(title_text="Y (m)", row=2, col=1)
+    fig2.update_yaxes(title_text="Z (m)", row=3, col=1)
+    
+    # Update layout
+    fig2.update_layout(
+        title=f'Position Tracking vs Time - {primitive_name}<br>Applied Force: [{force[0]:.1f}, {force[1]:.1f}, {force[2]:.1f}] N',
+        height=900,
+        width=1200,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    # Show the plot
+    fig2.show()
