@@ -31,7 +31,7 @@ class HybridForceMotion : public TorqueController {
   const std::string name() override;
 
  private:
-  Vector7d K_p_, K_d_, q_d_, dq_d_, K_p_target_, K_d_target_, q_d_target_, dq_d_target_;
+  Vector7d K_p_, K_d_, q_d_, dq_d_, K_p_target_, K_d_target_, q_d_target_, dq_d_target_,tau_ext_init_;
   Eigen::Matrix<double, 6, 1> f_d_, f_d_target_;
   double filter_coeff_;
   std::mutex mux_;

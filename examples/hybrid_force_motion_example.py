@@ -9,6 +9,14 @@ import numpy as np
 import panda_py
 from panda_py import controllers
 import plotly.graph_objects as go
+import datetime
+
+def check_boundaries(position, lower_bounds, upper_bounds):
+    """Check if the given position is within the specified joint boundaries."""
+    for i in range(len(position)):
+        if position[i] < lower_bounds[i] or position[i] > upper_bounds[i]:
+            return False
+    return True
 
 if __name__ == '__main__':
     # if len(sys.argv) < 5:
@@ -18,8 +26,8 @@ if __name__ == '__main__':
 
     # Arguments
     # hostname = sys.argv[1]
-    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_hard_shell_delicate.npy'#sys.argv[1]
-    primitive_name = 'try1'#'back_and_forth_1'#'circular_1'#'try'#'circles_1'#'roll'#'line'#sys.argv[2]
+    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate.npy'#sys.argv[1]
+    # primitive_name = 'try1'#'back_and_forth_1'#'circular_1'#'try'#'circles_1'#'roll'#'line'#sys.argv[2]
     force_z = float(-3.8)
     hostname = '172.16.0.2'
     username = 'tamarlab'
@@ -28,6 +36,7 @@ if __name__ == '__main__':
     # Load trajectory from .npy file
     try:
         loaded_data = np.load(npy_path, allow_pickle=True).item()
+        primitive_name = list(loaded_data.keys())[2]
         print(f'Available primitives in the file: {list(loaded_data.keys())}')
         trajectory_q = loaded_data[primitive_name]['q']
         trajectory_dq = loaded_data[primitive_name]['dq']
@@ -55,6 +64,11 @@ if __name__ == '__main__':
         
         # Store actual joint positions during execution
         actual_trajectory_q = []
+        
+        first_position = panda.get_position()
+        lower_bounds = first_position - 0.06
+        upper_bounds = first_position + 0.06
+        
 
         # Start the controller
         print("Starting HybridForceMotion controller...")
@@ -69,13 +83,18 @@ if __name__ == '__main__':
                 q_d = trajectory_q[i]
                 dq_d = trajectory_dq[i]
                 ctrl.set_control(q_d, force, dq_d)
-                
+                panda.update_robot_state()
                 # Record actual joint position
-                actual_trajectory_q.append(panda.get_position())
+                new_pos = panda.get_position()
+                actual_trajectory_q.append(new_pos)
+                if not check_boundaries(new_pos, lower_bounds, upper_bounds):
+                    print(f"Position out of bounds at waypoint {i}: {new_pos}")
+                    raise RuntimeError("Joint position exceeded safety boundaries. Stopping execution.")
                 # print(f'q:{panda.q}')
                 # Optional: print progress
-                if i % 100 == 0:
-                    print(f'Waypoint {i}/{len(trajectory_q)}')
+                # if i % 100 == 0:
+                now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                print(f'time:{now} new_pos: {new_pos}')#Waypoint {i}/{len(trajectory_q)}
         panda.move_to_joint_position(trajectory_q[0])
         print("Trajectory finished. Stopping controller.")
     finally:
@@ -243,3 +262,8 @@ if __name__ == '__main__':
     
     # Show the plot
     fig2.show()
+
+
+
+ #[ 0.56795613 -0.05610449  0.1748564 ]
+ #[ 0.57543462 -0.02768491  0.17638216
