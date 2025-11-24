@@ -61,25 +61,7 @@ franka::Torques HybridForceMotion::step(const franka::RobotState &robot_state,
   
   // add coriolis compensation
   Vector7d tau_d = tau_pd;// + coriolis;
-  // bool sign_difference_found = (dq.array() * tau_d.array()).matrix().minCoeff() < 0;
-  // if (sign_difference_found)
-  // {
-  //   std::cout << "had a different sign dq::" << dq.transpose() << "tau_d:" << tau_d.transpose() << std::endl;
-  // }
-
-  // force limit
-  // Eigen::Matrix<double, 6, 7> j_inv = jacobian.completeOrthogonalDecomposition().pseudoInverse();
-  // Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian.transpose(), Eigen::ComputeThinU | Eigen::ComputeThinV);
-  // double tolerance = 1e-6;
-  // Eigen::VectorXd singular_values_inv = svd.singularValues();
-  // for (long i = 0; i < singular_values_inv.size(); ++i) {
-  //     if (singular_values_inv(i) > tolerance) {
-  //         singular_values_inv(i) = 1.0 / singular_values_inv(i);
-  //     } else {
-  //         singular_values_inv(i) = 0;
-  //     }
-  // }
-  // Eigen::MatrixXd j_t_inv = svd.matrixV() * singular_values_inv.asDiagonal() * svd.matrixU().transpose();
+ 
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian.transpose(), Eigen::ComputeThinU | Eigen::ComputeThinV);
 
   // std::cout << "J transpose dimensions: " << jacobian.transpose().rows() << "x" << jacobian.transpose().cols() << std::endl;
