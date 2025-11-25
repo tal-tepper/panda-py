@@ -45,6 +45,20 @@ if __name__ == '__main__':
     except (IOError, KeyError) as e:
         print(f'Error: Could not find, read or parse trajectory file at {npy_path}: {e}')
         sys.exit(1)
+    # Define the desired force
+    force = np.zeros(6)
+    force[0] = force_z
+    force[1] = force_z
+    force[2] = force_z
+    
+    # Store actual joint positions and velocities during execution
+    actual_trajectory_q = []
+    actual_joint_positions = []
+    actual_joint_velocities = []
+    
+    error_occurred = False
+    error_message = ""
+    
     try:
         # Connect to the robot
         desk = panda_py.Desk(hostname, username, password)
@@ -56,17 +70,6 @@ if __name__ == '__main__':
         sleep(2)
         # Configure the HybridForceMotion controller
         ctrl = controllers.HybridForceMotion()
-
-        # Define the desired force
-        force = np.zeros(6)
-        force[0] = force_z
-        force[1] = force_z
-        force[2] = force_z
-        
-        # Store actual joint positions and velocities during execution
-        actual_trajectory_q = []
-        actual_joint_positions = []
-        actual_joint_velocities = []
         
         first_position = panda.get_position()
         lower_bounds = first_position - 0.06
@@ -77,41 +80,61 @@ if __name__ == '__main__':
         print("Starting HybridForceMotion controller...")
         panda.start_controller(ctrl)
 
-        # Loop through the trajectory
-        with panda.create_context(frequency=1000) as ctx:
-            for i in range(len(trajectory_q)):
-                if not ctx.ok():
-                    break
-                
-                q_d = trajectory_q[i]
-                dq_d = trajectory_dq[i]
-                ctrl.set_control(q_d, force, dq_d)
-                # panda.update_robot_state()
-                # Record actual joint position and state
-                state = panda.get_state()
-                new_pos = panda.get_position()
-                actual_trajectory_q.append(new_pos)
-                actual_joint_positions.append(state.q)
-                actual_joint_velocities.append(state.dq)
-                if not check_boundaries(new_pos, lower_bounds, upper_bounds):
-                    print(f"Position out of bounds at waypoint {i}: {new_pos}")
-                    raise RuntimeError("Joint position exceeded safety boundaries. Stopping execution.")
-                # print(f'q:{panda.q}')
-                # Optional: print progress
-                # if i % 100 == 0:
-                now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                print(f'i:{i} time:{now} new_pos: {new_pos}')#Waypoint {i}/{len(trajectory_q)}
-        panda.move_to_joint_position(trajectory_q[0])
-        print("Trajectory finished. Stopping controller.")
+        try:
+            # Loop through the trajectory
+            with panda.create_context(frequency=1000) as ctx:
+                for i in range(len(trajectory_q)):
+                    if not ctx.ok():
+                        break
+                    
+                    q_d = trajectory_q[i]
+                    dq_d = trajectory_dq[i]
+                    ctrl.set_control(q_d, force, dq_d)
+                    # panda.update_robot_state()
+                    # Record actual joint position and state
+                    state = panda.get_state()
+                    new_pos = panda.get_position()
+                    actual_trajectory_q.append(new_pos)
+                    actual_joint_positions.append(state.q)
+                    actual_joint_velocities.append(state.dq)
+                    if not check_boundaries(new_pos, lower_bounds, upper_bounds):
+                        print(f"Position out of bounds at waypoint {i}: {new_pos}")
+                        raise RuntimeError("Joint position exceeded safety boundaries. Stopping execution.")
+                    # print(f'q:{panda.q}')
+                    # Optional: print progress
+                    # if i % 100 == 0:
+                    now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    print(f'i:{i} time:{now} new_pos: {new_pos}')#Waypoint {i}/{len(trajectory_q)}
+        except Exception as e:
+            error_occurred = True
+            error_message = str(e)
+            print(f"\n*** Error during trajectory execution: {e} ***")
+            print(f"*** Collected {len(actual_trajectory_q)} data points before error ***\n")
+        
+        try:
+            panda.move_to_joint_position(trajectory_q[0])
+            print("Returned to start position.")
+        except Exception as e:
+            print(f"Warning: Could not return to start position: {e}")
+            
     finally:
-        desk.deactivate_fci()
-        desk.release_control()
+        try:
+            desk.deactivate_fci()
+            desk.release_control()
+        except:
+            pass
     
     
-
-  
-    print("Trajectory finished. Stopping controller.")
-    # panda.stop_controller()
+    # Check if we have any data to visualize
+    if len(actual_trajectory_q) == 0:
+        print("No data collected. Exiting without visualization.")
+        sys.exit(1)
+    
+    if error_occurred:
+        print(f"\nVisualization will show partial trajectory (up to error point)")
+        print(f"Error was: {error_message}\n")
+    else:
+        print("Trajectory finished successfully.")
     
     # Convert actual trajectory to numpy array
     actual_positions = np.array(actual_trajectory_q)
@@ -119,8 +142,13 @@ if __name__ == '__main__':
     # Compute forward kinematics for both trajectories to get Cartesian positions
     print("Computing forward kinematics for visualization...")
     
-    # Get end-effector positions for planned trajectory
-    planned_positions = np.array(loaded_data[primitive_name]['position'])
+    # Get end-effector positions for planned trajectory (truncate to match actual data length)
+    all_planned_positions = np.array(loaded_data[primitive_name]['position'])
+    planned_positions = all_planned_positions[:len(actual_positions)]
+    
+    # Truncate planned trajectory arrays to match actual data length
+    trajectory_q = trajectory_q[:len(actual_positions)]
+    trajectory_dq = trajectory_dq[:len(actual_positions)]
     
        
     # Create 3D plot with Plotly
