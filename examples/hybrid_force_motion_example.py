@@ -51,10 +51,11 @@ if __name__ == '__main__':
     force[1] = force_z
     force[2] = force_z
     
-    # Store actual joint positions and velocities during execution
+    # Store actual joint positions, velocities, and torques during execution
     actual_trajectory_q = []
     actual_joint_positions = []
     actual_joint_velocities = []
+    actual_joint_torques = []
     
     error_occurred = False
     error_message = ""
@@ -97,6 +98,7 @@ if __name__ == '__main__':
                     actual_trajectory_q.append(new_pos)
                     actual_joint_positions.append(state.q)
                     actual_joint_velocities.append(state.dq)
+                    actual_joint_torques.append(state.tau_J)
                     if not check_boundaries(new_pos, lower_bounds, upper_bounds):
                         print(f"Position out of bounds at waypoint {i}: {new_pos}")
                         raise RuntimeError("Joint position exceeded safety boundaries. Stopping execution.")
@@ -300,32 +302,24 @@ if __name__ == '__main__':
     # Convert joint data to numpy arrays
     actual_joint_positions = np.array(actual_joint_positions)
     actual_joint_velocities = np.array(actual_joint_velocities)
+    actual_joint_torques = np.array(actual_joint_torques)
     
-    # Create figure with 7 subplots for joint positions and velocities on same plot
+    # Create figure with 7 subplots for joint torques and velocities on same plot
     print("Creating joint tracking visualization...")
     fig3 = make_subplots(
         rows=7, cols=1,
-        subplot_titles=[f'Joint {i+1} - Position and Velocity vs Time' for i in range(7)],
+        subplot_titles=[f'Joint {i+1} - Torque and Velocity vs Time' for i in range(7)],
         vertical_spacing=0.02,
         specs=[[{"secondary_y": True}] for _ in range(7)]
     )
     
     # Add traces for each joint
     for joint_idx in range(7):
-        # Position - Planned (primary y-axis)
+        # Torque - Actual (primary y-axis)
         fig3.add_trace(
-            go.Scatter(x=time_planned, y=trajectory_q[:, joint_idx], 
-                       mode='lines', name=f'Planned q{joint_idx+1}',
-                       line=dict(color='green', width=2, dash='solid'),
-                       showlegend=(joint_idx == 0)),
-            row=joint_idx+1, col=1,
-            secondary_y=False
-        )
-        # Position - Actual (primary y-axis)
-        fig3.add_trace(
-            go.Scatter(x=time_actual, y=actual_joint_positions[:, joint_idx], 
-                       mode='lines', name=f'Actual q{joint_idx+1}',
-                       line=dict(color='red', width=2, dash='solid'),
+            go.Scatter(x=time_actual, y=actual_joint_torques[:, joint_idx], 
+                       mode='lines', name=f'Torque τ{joint_idx+1}',
+                       line=dict(color='blue', width=2, dash='solid'),
                        showlegend=(joint_idx == 0)),
             row=joint_idx+1, col=1,
             secondary_y=False
@@ -351,7 +345,7 @@ if __name__ == '__main__':
         )
         
         # Update y-axis labels
-        fig3.update_yaxes(title_text=f"Position (rad)", row=joint_idx+1, col=1, secondary_y=False)
+        fig3.update_yaxes(title_text=f"Torque (Nm)", row=joint_idx+1, col=1, secondary_y=False)
         fig3.update_yaxes(title_text=f"Velocity (rad/s)", row=joint_idx+1, col=1, secondary_y=True)
     
     # Update x-axis label for bottom subplot
@@ -359,7 +353,7 @@ if __name__ == '__main__':
     
     # Update layout
     fig3.update_layout(
-        title=f'Joint Position & Velocity Tracking - {primitive_name}<br>Applied Force: [{force[0]:.1f}, {force[1]:.1f}, {force[2]:.1f}] N',
+        title=f'Joint Torque & Velocity Tracking - {primitive_name}<br>Applied Force: [{force[0]:.1f}, {force[1]:.1f}, {force[2]:.1f}] N',
         height=1400,
         width=1200,
         showlegend=True,
