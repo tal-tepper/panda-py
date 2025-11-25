@@ -36,7 +36,8 @@ if __name__ == '__main__':
     # Load trajectory from .npy file
     try:
         loaded_data = np.load(npy_path, allow_pickle=True).item()
-        primitive_name = list(loaded_data.keys())[2]
+        # ['jab', 'feel', 'sense', 'back_and_forth', 'sides', 'back_and_forth_2']
+        primitive_name = list(loaded_data.keys())[2] # 2 is problematic
         print(f'Available primitives in the file: {list(loaded_data.keys())}')
         trajectory_q = loaded_data[primitive_name]['q']
         trajectory_dq = loaded_data[primitive_name]['dq']
@@ -83,7 +84,7 @@ if __name__ == '__main__':
                 q_d = trajectory_q[i]
                 dq_d = trajectory_dq[i]
                 ctrl.set_control(q_d, force, dq_d)
-                panda.update_robot_state()
+                # panda.update_robot_state()
                 # Record actual joint position
                 new_pos = panda.get_position()
                 actual_trajectory_q.append(new_pos)
@@ -94,7 +95,7 @@ if __name__ == '__main__':
                 # Optional: print progress
                 # if i % 100 == 0:
                 now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                print(f'time:{now} new_pos: {new_pos}')#Waypoint {i}/{len(trajectory_q)}
+                print(f'i:{i} time:{now} new_pos: {new_pos}')#Waypoint {i}/{len(trajectory_q)}
         panda.move_to_joint_position(trajectory_q[0])
         print("Trajectory finished. Stopping controller.")
     finally:
