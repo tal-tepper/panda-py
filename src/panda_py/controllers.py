@@ -14,6 +14,7 @@ from ._core import (
     HybridForceMotion,
     IntegratedVelocity,
     JointPosition,
+    PrimitiveTrajectory,
     TorqueController,
 )
 
@@ -26,4 +27,5 @@ __all__ = [
     "AppliedForce",
     "Force",
     "HybridForceMotion",
+    "PrimitiveTrajectory",
 ]

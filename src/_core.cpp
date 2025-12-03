@@ -8,6 +8,7 @@
 #include "controllers/applied_force.h"
 #include "controllers/applied_torque.h"
 #include "controllers/cartesian_impedance.h"
+#include "controllers/primitive_trajectory.h"
 #include "controllers/force.h"
 #include "controllers/hybrid_force_motion.h"
 #include "controllers/integrated_velocity.h"
@@ -400,6 +401,27 @@ PYBIND11_MODULE(_core, m) {
                controllers::CartesianTrajectory::kDefaultDqThreshold,
            py::arg("filter_coeff") =
                controllers::CartesianTrajectory::kDefaultFilterCoeff);
+
+  py::class_<controllers::PrimitiveTrajectory, TorqueController,
+             std::shared_ptr<controllers::PrimitiveTrajectory>>(
+      m, "PrimitiveTrajectory")
+      .def(py::init<const Vector7d &,
+                    const Eigen::Matrix<double, 6, 6> &, const double &,
+                    const double &, const double, const double>(),
+           py::arg("q_init"),
+           py::arg("impedance") =
+               controllers::PrimitiveTrajectory::kDefaultImpedance,
+           py::arg("damping_ratio") =
+               controllers::PrimitiveTrajectory::kDefaultDampingRatio,
+           py::arg("nullspace_stiffness") =
+               controllers::PrimitiveTrajectory::kDefaultNullspaceStiffness,
+           py::arg("dq_threshold") =
+               controllers::PrimitiveTrajectory::kDefaultDqThreshold,
+           py::arg("filter_coeff") =
+               controllers::PrimitiveTrajectory::kDefaultFilterCoeff)
+      .def("set_control", &controllers::PrimitiveTrajectory::setControl,
+           py::call_guard<py::gil_scoped_release>(),
+           py::arg("position"), py::arg("orientation"));
 
   py::class_<controllers::JointTrajectory, TorqueController,
              std::shared_ptr<controllers::JointTrajectory>>(
