@@ -14,11 +14,16 @@ print(f"Trajectory keys: {trajectory_data.keys() if isinstance(trajectory_data, 
 
 # Extract the 'jab' primitive trajectory
 primitive_name = 'jab'
-trajectory = trajectory_data[primitive_name]
-print(f"Trajectory shape: {trajectory.shape}")
+primitive_data = trajectory_data[primitive_name]
+print(f"Primitive data type: {type(primitive_data)}")
+print(f"Primitive keys: {primitive_data.keys() if isinstance(primitive_data, dict) else 'Not a dict'}")
+
+# Get the joint positions
+q_trajectory = primitive_data['q']
+print(f"Joint trajectory shape: {q_trajectory.shape}")
 
 # Take the first waypoint
-q_original = trajectory[0]
+q_original = q_trajectory[0]
 print(f"\nOriginal joint positions: {q_original}")
 
 # Get FK for this configuration
