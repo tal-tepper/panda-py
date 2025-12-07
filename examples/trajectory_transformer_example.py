@@ -210,20 +210,21 @@ def example_transform_and_execute():
             
             # Process each sample
             for i in range(len(q_log)):
-                # Create a state-like object with current values
-                class State:
-                    def __init__(self, q, dq, tau_J):
-                        self.q = q
-                        self.dq = dq
-                        self.tau_J = tau_J
+                q = q_log[i]
+                dq = dq_log[i]
+                tau_j = tau_J_log[i]
                 
-                state = State(q_log[i], dq_log[i], tau_J_log[i])
+                # Calculate gravity (pass q directly with default mass and gravity)
+                # Assuming default end-effector mass and center of mass
+                m_total = 0.73  # Default EE mass in kg
+                F_x_Ctotal = [0.01, 0.0, 0.03]  # Default EE center of mass
+                gravity = np.array(p_model.gravity(q, m_total, F_x_Ctotal))
                 
-                # Extract data
-                tau_j = np.array(state.tau_J)
-                gravity = np.array(p_model.gravity(state))
-                coriolis = np.array(p_model.coriolis(state))
-                jacobian = np.array(p_model.zero_jacobian(state))
+                # Calculate coriolis (pass q and dq)
+                coriolis = np.array(p_model.coriolis(q, dq, m_total, F_x_Ctotal))
+                
+                # Calculate jacobian (pass q)
+                jacobian = np.array(p_model.zero_jacobian(q))
                 
                 # Calculate joint torques without gravity and coriolis
                 tau = tau_j - gravity - coriolis
