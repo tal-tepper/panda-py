@@ -126,10 +126,23 @@ def example_transform_and_execute():
     
     if execute_on_robot:
         import panda_py
+        import scipy.linalg
+        import matplotlib.pyplot as plt
         
         print("\n" + "="*70)
         print(" EXECUTING TRANSFORMED TRAJECTORY")
         print("="*70 + "\n")
+        
+        # Storage for logged data
+        logged_data = {
+            'time': [],
+            'tau_J': [],
+            'gravity': [],
+            'coriolis': [],
+            'jacobian': [],
+            'q': [],
+            'dq': []
+        }
         
         try:
             # Connect to robot
@@ -144,6 +157,10 @@ def example_transform_and_execute():
             panda.move_to_joint_position(q_start)
             sleep(2)
             
+            # Enable logging after reaching start position
+            print("Enabling data logging...")
+            panda.enable_logging(1000)  # Log at 1000 Hz
+            
             # Execute transformed trajectory
             print(f"Executing trajectory with {len(result['q_waypoints'])} waypoints...")
             success = panda.move_to_joint_position(
@@ -151,17 +168,84 @@ def example_transform_and_execute():
                 speed_factor=speed_factor
             )
             
+            # Stop logging
+            print("Stopping data logging...")
+            panda.stop_logging()
+            
             if success:
                 print("✓ Trajectory executed successfully!")
             else:
                 print("⚠ Trajectory execution incomplete")
             
+            # Get logged data
+            print("Retrieving logged data...")
+            log = panda.get_log()
+            
             # Return to start
             print("Returning to start position...")
             panda.move_to_joint_position(q_start)
             
+            # Process logged data to calculate forces
+            print("\nProcessing logged data to calculate forces...")
+            calculated_forces = []
+            times = []
+            
+            for i, record in enumerate(log):
+                state = record['robot_state']
+                
+                # Extract data
+                tau_j = np.array(state.tau_J)
+                gravity = np.array(panda.get_model().gravity(state))
+                coriolis = np.array(panda.get_model().coriolis(state))
+                jacobian = np.array(panda.get_model().zero_jacobian(state))
+                
+                # Calculate joint torques without gravity and coriolis
+                tau = tau_j - gravity - coriolis
+                
+                # Calculate Cartesian forces using least squares
+                # F = (J^T)^+ * tau, where ^+ is pseudoinverse
+                calced_force, _, _, _ = scipy.linalg.lstsq(jacobian.T, tau, lapack_driver='gelsy')
+                
+                calculated_forces.append(calced_force[:3])  # Only X, Y, Z forces
+                times.append(record['timestamp'])
+            
+            calculated_forces = np.array(calculated_forces)
+            times = np.array(times)
+            times = times - times[0]  # Start from 0
+            
+            # Plot force vs time
+            print("Creating force plot...")
+            fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+            
+            axes[0].plot(times, calculated_forces[:, 0], 'r-', linewidth=2)
+            axes[0].set_ylabel('Force X (N)', fontsize=12)
+            axes[0].grid(True, alpha=0.3)
+            axes[0].set_title('Calculated Cartesian Forces', fontsize=14, fontweight='bold')
+            
+            axes[1].plot(times, calculated_forces[:, 1], 'g-', linewidth=2)
+            axes[1].set_ylabel('Force Y (N)', fontsize=12)
+            axes[1].grid(True, alpha=0.3)
+            
+            axes[2].plot(times, calculated_forces[:, 2], 'b-', linewidth=2)
+            axes[2].set_ylabel('Force Z (N)', fontsize=12)
+            axes[2].set_xlabel('Time (s)', fontsize=12)
+            axes[2].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig('trajectory_forces.png', dpi=150)
+            print("✓ Force plot saved to trajectory_forces.png")
+            plt.show()
+            
+            # Print force statistics
+            print(f"\nForce Statistics:")
+            print(f"  X: mean={calculated_forces[:, 0].mean():.2f}N, std={calculated_forces[:, 0].std():.2f}N, max={np.abs(calculated_forces[:, 0]).max():.2f}N")
+            print(f"  Y: mean={calculated_forces[:, 1].mean():.2f}N, std={calculated_forces[:, 1].std():.2f}N, max={np.abs(calculated_forces[:, 1]).max():.2f}N")
+            print(f"  Z: mean={calculated_forces[:, 2].mean():.2f}N, std={calculated_forces[:, 2].std():.2f}N, max={np.abs(calculated_forces[:, 2]).max():.2f}N")
+            
         except Exception as e:
             print(f"✗ Error during execution: {e}")
+            import traceback
+            traceback.print_exc()
             
         finally:
             desk.deactivate_fci()
