@@ -98,6 +98,7 @@ def test_transformation(
         translation=translation,
         rotation_axis=rotation_axis,
         rotation_angle=rotation_angle,
+        rotate_orientation=True,        
         max_waypoints=max_waypoints,
         min_distance=0.01,
         speed_factor=0.1
@@ -259,9 +260,9 @@ if __name__ == '__main__':
     result = test_transformation(
         npy_path='/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy',
         primitive_name='jab',
-        translation=np.array([0.0, 0.01, 0.0]),  # 10cm in Y
+        translation=np.array([0.005, 0.01, 0.0]),  # 10cm in Y
         rotation_axis='z',
-        rotation_angle=np.radians(15),
+        rotation_angle=np.radians(40),
         max_waypoints=150,
         visualize=True
     )

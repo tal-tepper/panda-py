@@ -28,13 +28,13 @@ def example_transform_and_execute():
     # ============================================
     
     # Input trajectory
-    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_hard_shell_delicate.npy'
-    primitive_name = 'try1'
+    npy_path = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy'
+    primitive_name = 'left_and_right'
     
     # Transformation parameters
-    translation = np.array([0.0, 0.1, 0.0])  # Move 10cm in Y direction
+    translation = np.array([0.001, 0.003, 0.0])  # Move 10cm in Y direction
     rotation_axis = 'z'  # Rotate about Z axis
-    rotation_angle = np.radians(15)  # 15 degrees rotation
+    rotation_angle = np.radians(40)  # 15 degrees rotation
     
     # Or use a custom rotation matrix (comment out axis/angle if using this)
     # rotation_matrix = np.array([
@@ -122,7 +122,7 @@ def example_transform_and_execute():
     # ============================================
     
     # COMMENT OUT THIS SECTION IF NOT CONNECTED TO ROBOT
-    execute_on_robot = False  # Set to True to execute on robot
+    execute_on_robot = True  # Set to True to execute on robot
     
     if execute_on_robot:
         import panda_py
