@@ -215,11 +215,14 @@ class TrajectoryTransformer:
                     valid_indices.append(i)
                 else:
                     failed_count += 1
-                    if i < 5 and self.verbose:  # Print first few failures for debugging
+                    if i < 3 and self.verbose:  # Print first few failures for debugging
                         print(f"  Debug: Waypoint {i} failed joint limits check")
+                        print(f"    q_flat shape: {q_flat.shape}, q shape: {q.shape}")
+                        print(f"    q_flat: {q_flat}")
+                        print(f"    All joints:")
                         for j in range(7):
-                            if q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]:
-                                print(f"    Joint {j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
+                            status = "✗" if (q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]) else "✓"
+                            print(f"    {status} Joint {j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
             except Exception as e:
                 failed_count += 1
                 if i < 5 and self.verbose:  # Print first few exceptions for debugging
