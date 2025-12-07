@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 
 # Load a sample trajectory
 trajectory_file = '/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy'
-trajectory = np.load(trajectory_file)
+trajectory = np.load(trajectory_file, allow_pickle=True)
 print(f"Loaded trajectory shape: {trajectory.shape}")
 
 # Take the first waypoint
