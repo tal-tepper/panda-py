@@ -68,6 +68,7 @@ def test_transformation(
     translation: np.ndarray = np.zeros(3),
     rotation_axis: str = None,
     rotation_angle: float = 0.0,
+    rotate_orientation: bool = False,
     max_waypoints: int = 100,
     visualize: bool = True
 ):
@@ -80,6 +81,7 @@ def test_transformation(
         translation: Translation vector [x, y, z]
         rotation_axis: 'x', 'y', or 'z'
         rotation_angle: Angle in radians
+        rotate_orientation: If True, also rotate end-effector orientations
         max_waypoints: Maximum waypoints
         visualize: Whether to create visualization
     """
@@ -98,7 +100,7 @@ def test_transformation(
         translation=translation,
         rotation_axis=rotation_axis,
         rotation_angle=rotation_angle,
-        rotate_orientation=True,        
+        rotate_orientation=rotate_orientation,
         max_waypoints=max_waypoints,
         min_distance=0.01,
         speed_factor=0.1
@@ -260,9 +262,10 @@ if __name__ == '__main__':
     result = test_transformation(
         npy_path='/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy',
         primitive_name='jab',
-        translation=np.array([0.005, 0.01, 0.0]),  # 10cm in Y
+        translation=np.array([0.0, 0.01, 0.0]),  # 1cm in Y
         rotation_axis='z',
-        rotation_angle=np.radians(40),
+        rotation_angle=np.radians(15),
+        rotate_orientation=False,  # Keep end-effector orientation fixed, only rotate positions
         max_waypoints=150,
         visualize=True
     )

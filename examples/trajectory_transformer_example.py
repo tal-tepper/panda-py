@@ -157,9 +157,23 @@ def example_transform_and_execute():
             panda.move_to_joint_position(q_start)
             sleep(2)
             
+            # Estimate trajectory duration
+            # Calculate approximate time based on waypoint distances and speed factor
+            q_waypoints = result['q_waypoints']
+            total_distance = 0
+            for i in range(1, len(q_waypoints)):
+                total_distance += np.linalg.norm(q_waypoints[i] - q_waypoints[i-1])
+            
+            # Rough estimate: assume average velocity and account for speed_factor
+            # Typical joint velocity ~1 rad/s, with acceleration/deceleration overhead
+            estimated_duration = total_distance / (speed_factor * 1.0) * 1.5  # Add 50% margin
+            num_samples = int(1000 * estimated_duration)  # 1000 Hz sampling
+            
+            print(f"Estimated trajectory duration: {estimated_duration:.1f}s ({num_samples} samples)")
+            
             # Enable logging after reaching start position
             print("Enabling data logging...")
-            panda.enable_logging(1000)  # Log at 1000 Hz
+            panda.enable_logging(num_samples)
             
             # Execute transformed trajectory
             print(f"Executing trajectory with {len(result['q_waypoints'])} waypoints...")
@@ -167,10 +181,6 @@ def example_transform_and_execute():
                 result['q_waypoints'].tolist(),
                 speed_factor=speed_factor
             )
-            
-            # Stop logging
-            print("Stopping data logging...")
-            panda.stop_logging()
             
             if success:
                 print("✓ Trajectory executed successfully!")
