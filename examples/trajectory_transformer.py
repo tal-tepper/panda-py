@@ -157,7 +157,7 @@ class TrajectoryTransformer:
             rotation_center = positions[0]  # First waypoint as rotation center
             
             # For Z-axis rotation, only rotate X-Y plane, keep Z unchanged
-            if rotation_axis == 'z':
+            if rotation_axis == 'z' and rotation_angle != 0.0:
                 # Rotate only in X-Y plane
                 xy_positions = positions[:, :2].copy()  # Extract X,Y
                 xy_center = rotation_center[:2]
@@ -171,12 +171,14 @@ class TrajectoryTransformer:
                 # Reconstruct 3D positions with original Z values
                 transformed_positions = positions.copy()
                 transformed_positions[:, :2] = rotated_xy + xy_center
-                transformed_positions += translation
             else:
-                # For X or Y axis rotation, rotate in 3D
+                # For X or Y axis rotation, or no rotation, rotate in 3D
                 centered_positions = positions - rotation_center
                 rotated_positions = centered_positions @ rotation_matrix.T
-                transformed_positions = rotated_positions + rotation_center + translation
+                transformed_positions = rotated_positions + rotation_center
+            
+            # Apply translation after rotation
+            transformed_positions = transformed_positions + translation
         else:
             transformed_positions = positions + translation
         
