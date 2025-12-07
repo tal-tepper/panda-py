@@ -197,17 +197,33 @@ def example_transform_and_execute():
             
             # Process logged data to calculate forces
             print("\nProcessing logged data to calculate forces...")
-            calculated_forces = []
-            times = []
+            print(f"Log keys: {log.keys()}")
+            print(f"Number of samples: {len(log['q'])}")
             
-            for i, record in enumerate(log):
-                state = record['robot_state']
+            calculated_forces = []
+            p_model = panda.get_model()
+            
+            # Get arrays from log
+            q_log = np.array(log['q'])
+            dq_log = np.array(log['dq'])
+            tau_J_log = np.array(log['tau_J'])
+            
+            # Process each sample
+            for i in range(len(q_log)):
+                # Create a state-like object with current values
+                class State:
+                    def __init__(self, q, dq, tau_J):
+                        self.q = q
+                        self.dq = dq
+                        self.tau_J = tau_J
+                
+                state = State(q_log[i], dq_log[i], tau_J_log[i])
                 
                 # Extract data
                 tau_j = np.array(state.tau_J)
-                gravity = np.array(panda.get_model().gravity(state))
-                coriolis = np.array(panda.get_model().coriolis(state))
-                jacobian = np.array(panda.get_model().zero_jacobian(state))
+                gravity = np.array(p_model.gravity(state))
+                coriolis = np.array(p_model.coriolis(state))
+                jacobian = np.array(p_model.zero_jacobian(state))
                 
                 # Calculate joint torques without gravity and coriolis
                 tau = tau_j - gravity - coriolis
@@ -217,11 +233,9 @@ def example_transform_and_execute():
                 calced_force, _, _, _ = scipy.linalg.lstsq(jacobian.T, tau, lapack_driver='gelsy')
                 
                 calculated_forces.append(calced_force[:3])  # Only X, Y, Z forces
-                times.append(record['timestamp'])
             
             calculated_forces = np.array(calculated_forces)
-            times = np.array(times)
-            times = times - times[0]  # Start from 0
+            times = np.arange(len(calculated_forces)) / 1000.0  # Time in seconds (1000 Hz sampling)
             
             # Plot force vs time
             print("Creating force plot...")
