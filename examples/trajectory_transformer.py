@@ -182,27 +182,9 @@ class TrajectoryTransformer:
         else:
             transformed_positions = positions + translation
         
-        # Apply rotation to orientations only if requested
-        if rotate_orientation and rotation_angle != 0.0:
-            # Rotate EE around its own local Z-axis
-            # For local frame rotation: O_new = O_original * R_local
-            # where R_local is rotation around the local Z-axis (third column of O)
-            
-            if rotation_axis == 'z':
-                # Create rotation around local Z-axis
-                cos_a = np.cos(rotation_angle)
-                sin_a = np.sin(rotation_angle)
-                # Rotation around Z in local frame (rotate X and Y axes)
-                R_local = np.array([[cos_a, -sin_a, 0],
-                                   [sin_a,  cos_a, 0],
-                                   [0,      0,     1]])
-                transformed_orientations = np.einsum('nij,jk->nik', orientations, R_local)
-            else:
-                # For X or Y rotation, apply in local frame
-                transformed_orientations = np.einsum('nij,jk->nik', orientations, rotation_matrix)
-        else:
-            # Keep orientations fixed in base frame (EE orientation doesn't change)
-            transformed_orientations = orientations.copy()
+        # For rotate_orientation, we keep orientations unchanged here
+        # The rotation will be applied directly to joint 7 after IK
+        transformed_orientations = orientations.copy()
         
         if self.verbose:
             print(f"✓ Transformation applied")
@@ -214,7 +196,8 @@ class TrajectoryTransformer:
         positions: np.ndarray,
         orientations: np.ndarray,
         q_init: Optional[np.ndarray] = None,
-        debug_info: Optional[dict] = None
+        debug_info: Optional[dict] = None,
+        ee_rotation_angle: float = 0.0
     ) -> Tuple[np.ndarray, List[int]]:
         """
         Convert Cartesian trajectory to joint space using inverse kinematics.
@@ -223,6 +206,7 @@ class TrajectoryTransformer:
             positions: Array of 3D positions [n_waypoints, 3]
             orientations: Array of 3x3 rotation matrices [n_waypoints, 3, 3]
             q_init: Initial joint configuration for IK (uses first solution if None)
+            ee_rotation_angle: Additional rotation to add to joint 7 (EE flange rotation)
             
         Returns:
             q_trajectory: Joint positions [n_valid_waypoints, 7]
@@ -272,6 +256,10 @@ class TrajectoryTransformer:
                         if debug_info and 'translation' in debug_info:
                             print(f"    Translation applied: {debug_info['translation']}")
                     continue
+                
+                # Add EE rotation to joint 7 (flange rotation)
+                if ee_rotation_angle != 0.0:
+                    q_flat[6] += ee_rotation_angle  # Joint 7 is index 6
                 
                 # Check joint limits
                 if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
@@ -464,9 +452,12 @@ class TrajectoryTransformer:
         )
         
         # Convert back to joint space
+        # If rotate_orientation is True, add rotation to joint 7 after IK
+        ee_rotation = rotation_angle if (rotate_orientation and rotation_axis == 'z') else 0.0
         q_transformed, valid_indices = self.cartesian_to_joints(
             positions_tf, orientations_tf, q_init=q_original[0],
-            debug_info={'translation': translation}
+            debug_info={'translation': translation},
+            ee_rotation_angle=ee_rotation
         )
         
         if len(q_transformed) == 0:
