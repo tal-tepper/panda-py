@@ -160,7 +160,8 @@ class TrajectoryTransformer:
         self,
         positions: np.ndarray,
         orientations: np.ndarray,
-        q_init: Optional[np.ndarray] = None
+        q_init: Optional[np.ndarray] = None,
+        debug_info: Optional[dict] = None
     ) -> Tuple[np.ndarray, List[int]]:
         """
         Convert Cartesian trajectory to joint space using inverse kinematics.
@@ -209,6 +210,16 @@ class TrajectoryTransformer:
                 # Flatten to 1D array for storage
                 q_flat = q.flatten()
                 
+                # Check for NaN (IK failure)
+                if np.any(np.isnan(q_flat)):
+                    failed_count += 1
+                    if i < 3 and self.verbose:
+                        print(f"  Debug: Waypoint {i} IK returned NaN (no solution found)")
+                        print(f"    Transformed position: {positions[i]}")
+                        if debug_info and 'translation' in debug_info:
+                            print(f"    Translation applied: {debug_info['translation']}")
+                    continue
+                
                 # Check joint limits
                 if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
                     q_trajectory.append(q_flat)
@@ -217,16 +228,13 @@ class TrajectoryTransformer:
                     failed_count += 1
                     if i < 3 and self.verbose:  # Print first few failures for debugging
                         print(f"  Debug: Waypoint {i} failed joint limits check")
-                        print(f"    q_flat shape: {q_flat.shape}, q shape: {q.shape}")
-                        print(f"    q_flat: {q_flat}")
-                        print(f"    All joints:")
                         for j in range(7):
-                            status = "✗" if (q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]) else "✓"
-                            print(f"    {status} Joint {j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
+                            if q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]:
+                                print(f"    Joint {j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
             except Exception as e:
                 failed_count += 1
-                if i < 5 and self.verbose:  # Print first few exceptions for debugging
-                    print(f"  Debug: Waypoint {i} IK exception: {e}")
+                if i < 3 and self.verbose:  # Print first few exceptions for debugging
+                    print(f"  Debug: Waypoint {i} IK exception: {type(e).__name__}: {e}")
             
             if self.verbose and i % 100 == 0 and i > 0:
                 elapsed = time.time() - start_time
@@ -400,7 +408,8 @@ class TrajectoryTransformer:
         
         # Convert back to joint space
         q_transformed, valid_indices = self.cartesian_to_joints(
-            positions_tf, orientations_tf, q_init=q_original[0]
+            positions_tf, orientations_tf, q_init=q_original[0],
+            debug_info={'translation': translation}
         )
         
         if len(q_transformed) == 0:

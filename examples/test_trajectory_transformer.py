@@ -258,8 +258,8 @@ if __name__ == '__main__':
     
     result = test_transformation(
         npy_path='/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy',
-        primitive_name='try1',
-        translation=np.array([0.0, 0.1, 0.0]),  # 10cm in Y
+        primitive_name='jab',
+        translation=np.array([0.0, 0.01, 0.0]),  # 10cm in Y
         rotation_axis='z',
         rotation_angle=np.radians(15),
         max_waypoints=150,
