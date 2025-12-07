@@ -186,10 +186,10 @@ class TrajectoryTransformer:
         start_time = time.time()
         
         for i in range(n_waypoints):
-            # Convert rotation matrix to quaternion (w, x, y, z format)
+            # Convert rotation matrix to quaternion (x, y, z, w format for panda_py.ik)
             rot = R.from_matrix(orientations[i])
             quat = rot.as_quat()  # Returns [x, y, z, w]
-            orientation_quat = np.array([[quat[3]], [quat[0]], [quat[1]], [quat[2]]])  # [w, x, y, z] as column vector [4, 1]
+            orientation_quat = quat.reshape(4, 1)  # Keep as [x, y, z, w] column vector [4, 1]
             
             # Prepare position as column vector [3, 1]
             position_col = positions[i].reshape(3, 1)
