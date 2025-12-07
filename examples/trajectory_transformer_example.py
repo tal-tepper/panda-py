@@ -209,21 +209,26 @@ def example_transform_and_execute():
             tau_J_log = np.array(log['tau_J'])
             
             # Process each sample
+            # Default end-effector parameters
+            m_total = 0.73  # Default EE mass in kg
+            F_x_Ctotal = [0.01, 0.0, 0.03]  # Default EE center of mass
+            # Default inertia tensor (3x3 matrix flattened to 9 values)
+            I_total = [0.001, 0.0, 0.0,
+                      0.0, 0.0025, 0.0,
+                      0.0, 0.0, 0.0017]
+            
             for i in range(len(q_log)):
                 q = q_log[i]
                 dq = dq_log[i]
                 tau_j = tau_J_log[i]
                 
-                # Calculate gravity (pass q directly with default mass and gravity)
-                # Assuming default end-effector mass and center of mass
-                m_total = 0.73  # Default EE mass in kg
-                F_x_Ctotal = [0.01, 0.0, 0.03]  # Default EE center of mass
+                # Calculate gravity
                 gravity = np.array(p_model.gravity(q, m_total, F_x_Ctotal))
                 
-                # Calculate coriolis (pass q and dq)
-                coriolis = np.array(p_model.coriolis(q, dq, m_total, F_x_Ctotal))
+                # Calculate coriolis (needs inertia tensor)
+                coriolis = np.array(p_model.coriolis(q, dq, I_total, m_total, F_x_Ctotal))
                 
-                # Calculate jacobian (pass q)
+                # Calculate jacobian
                 jacobian = np.array(p_model.zero_jacobian(q))
                 
                 # Calculate joint torques without gravity and coriolis
