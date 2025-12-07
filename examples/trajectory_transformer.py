@@ -108,7 +108,8 @@ class TrajectoryTransformer:
         translation: np.ndarray = np.zeros(3),
         rotation_matrix: Optional[np.ndarray] = None,
         rotation_axis: Optional[str] = None,
-        rotation_angle: float = 0.0
+        rotation_angle: float = 0.0,
+        rotate_orientation: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Apply translation and rotation to Cartesian trajectory.
@@ -118,8 +119,10 @@ class TrajectoryTransformer:
             orientations: Original 3x3 rotation matrices [n_waypoints, 3, 3]
             translation: Translation vector [x, y, z] in meters
             rotation_matrix: 3x3 rotation matrix to apply (optional)
-            rotation_axis: Axis to rotate about ('x', 'y', or 'z') (optional)
+            rotation_axis: Axis to rotate about ('x', 'y', or 'z') in base frame (optional)
             rotation_angle: Angle in radians (used with rotation_axis)
+            rotate_orientation: If True, also rotate end-effector orientations.
+                               If False (default), only rotate trajectory positions around start point.
             
         Returns:
             transformed_positions: Transformed positions
@@ -131,7 +134,9 @@ class TrajectoryTransformer:
             if rotation_matrix is not None:
                 print(f"  Using provided rotation matrix")
             elif rotation_axis:
-                print(f"  Rotation: {np.degrees(rotation_angle):.1f}° about {rotation_axis}-axis")
+                print(f"  Rotation: {np.degrees(rotation_angle):.1f}° about {rotation_axis}-axis (base frame)")
+                print(f"  Rotation center: end-effector start position")
+            print(f"  Rotate orientation: {rotate_orientation}")
         
         # Create rotation matrix if not provided
         if rotation_matrix is None:
@@ -147,9 +152,20 @@ class TrajectoryTransformer:
             else:
                 rotation_matrix = np.eye(3)
         
-        # Apply transformations
-        transformed_positions = positions @ rotation_matrix.T + translation
-        transformed_orientations = np.einsum('ij,njk->nik', rotation_matrix, orientations)
+        # Rotate positions around the first waypoint (end-effector start)
+        if rotation_angle != 0.0 or not np.allclose(rotation_matrix, np.eye(3)):
+            rotation_center = positions[0]  # First waypoint as rotation center
+            centered_positions = positions - rotation_center
+            rotated_positions = centered_positions @ rotation_matrix.T
+            transformed_positions = rotated_positions + rotation_center + translation
+        else:
+            transformed_positions = positions + translation
+        
+        # Apply rotation to orientations only if requested
+        if rotate_orientation and (rotation_angle != 0.0 or not np.allclose(rotation_matrix, np.eye(3))):
+            transformed_orientations = np.einsum('ij,njk->nik', rotation_matrix, orientations)
+        else:
+            transformed_orientations = orientations.copy()
         
         if self.verbose:
             print(f"✓ Transformation applied")
@@ -362,6 +378,7 @@ class TrajectoryTransformer:
         rotation_matrix: Optional[np.ndarray] = None,
         rotation_axis: Optional[str] = None,
         rotation_angle: float = 0.0,
+        rotate_orientation: bool = False,
         max_waypoints: int = 100,
         min_distance: float = 0.01,
         speed_factor: float = 0.1
@@ -374,8 +391,10 @@ class TrajectoryTransformer:
             primitive_name: Name of primitive to load
             translation: Translation offset [x, y, z] in meters
             rotation_matrix: 3x3 rotation matrix (optional)
-            rotation_axis: Rotation axis 'x', 'y', or 'z' (optional)
+            rotation_axis: Rotation axis 'x', 'y', or 'z' in base frame (optional)
             rotation_angle: Rotation angle in radians (optional)
+            rotate_orientation: If True, also rotate end-effector orientations.
+                               If False (default), only rotate trajectory positions.
             max_waypoints: Maximum waypoints after downsampling
             min_distance: Minimum joint distance between waypoints
             speed_factor: Speed factor for trajectory generation (0.0-1.0)
@@ -403,7 +422,8 @@ class TrajectoryTransformer:
             translation=translation,
             rotation_matrix=rotation_matrix,
             rotation_axis=rotation_axis,
-            rotation_angle=rotation_angle
+            rotation_angle=rotation_angle,
+            rotate_orientation=rotate_orientation
         )
         
         # Convert back to joint space
