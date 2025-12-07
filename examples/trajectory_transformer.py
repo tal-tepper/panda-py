@@ -163,8 +163,13 @@ class TrajectoryTransformer:
         
         # Apply rotation to orientations only if requested
         if rotate_orientation and (rotation_angle != 0.0 or not np.allclose(rotation_matrix, np.eye(3))):
-            transformed_orientations = np.einsum('ij,njk->nik', rotation_matrix, orientations)
+            # Rotate EE around its own local Z-axis (right multiply for local frame rotation)
+            # O_new = O_original * R means "rotate around EE's own axes"
+            # For Z-axis rotation, we want to rotate around the EE's local Z
+            # Since rotation_matrix is in base frame, we need to apply it in local frame
+            transformed_orientations = np.einsum('nij,jk->nik', orientations, rotation_matrix)
         else:
+            # Keep orientations fixed in base frame (EE orientation doesn't change)
             transformed_orientations = orientations.copy()
         
         if self.verbose:
