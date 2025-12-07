@@ -12,8 +12,9 @@ trajectory_data = np.load(trajectory_file, allow_pickle=True).item()
 print(f"Loaded trajectory data type: {type(trajectory_data)}")
 print(f"Trajectory keys: {trajectory_data.keys() if isinstance(trajectory_data, dict) else 'Not a dict'}")
 
-# Extract the trajectory array
-trajectory = trajectory_data['trajectory']
+# Extract the 'jab' primitive trajectory
+primitive_name = 'jab'
+trajectory = trajectory_data[primitive_name]
 print(f"Trajectory shape: {trajectory.shape}")
 
 # Take the first waypoint
