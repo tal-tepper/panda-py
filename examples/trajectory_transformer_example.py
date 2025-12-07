@@ -34,7 +34,7 @@ def example_transform_and_execute():
     # Transformation parameters
     translation = np.array([0.0, 0.1, 0.0])  # Move 10cm in Y direction
     rotation_axis = 'z'  # Rotate about Z axis
-    rotation_angle = np.radians(0)  # 15 degrees rotation
+    rotation_angle = np.radians(15)  # 15 degrees rotation
     
     # Or use a custom rotation matrix (comment out axis/angle if using this)
     # rotation_matrix = np.array([
@@ -82,6 +82,7 @@ def example_transform_and_execute():
         rotation_matrix=rotation_matrix,
         rotation_axis=rotation_axis,
         rotation_angle=rotation_angle,
+        rotate_orientation=True,  # Rotate end-effector orientation by the same angle
         max_waypoints=max_waypoints,
         min_distance=min_distance,
         speed_factor=speed_factor
