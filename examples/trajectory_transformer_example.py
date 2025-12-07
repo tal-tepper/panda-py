@@ -207,6 +207,7 @@ def example_transform_and_execute():
             q_log = np.array(log['q'])
             dq_log = np.array(log['dq'])
             tau_J_log = np.array(log['tau_J'])
+            O_T_EE_log = np.array(log['O_T_EE'])
             
             # Process each sample
             # Default end-effector parameters
@@ -216,11 +217,17 @@ def example_transform_and_execute():
             I_total = [0.001, 0.0, 0.0,
                       0.0, 0.0025, 0.0,
                       0.0, 0.0, 0.0017]
+            # Default EE_T_K (identity transformation)
+            EE_T_K = [1.0, 0.0, 0.0, 0.0,
+                     0.0, 1.0, 0.0, 0.0,
+                     0.0, 0.0, 1.0, 0.0,
+                     0.0, 0.0, 0.0, 1.0]
             
             for i in range(len(q_log)):
                 q = q_log[i]
                 dq = dq_log[i]
                 tau_j = tau_J_log[i]
+                O_T_EE = O_T_EE_log[i]
                 
                 # Calculate gravity
                 gravity = np.array(p_model.gravity(q, m_total, F_x_Ctotal))
@@ -228,8 +235,8 @@ def example_transform_and_execute():
                 # Calculate coriolis (needs inertia tensor)
                 coriolis = np.array(p_model.coriolis(q, dq, I_total, m_total, F_x_Ctotal))
                 
-                # Calculate jacobian
-                jacobian = np.array(p_model.zero_jacobian(q))
+                # Calculate jacobian (need to pass Frame.kEndEffector, q, F_T_EE, EE_T_K)
+                jacobian = np.array(p_model.zero_jacobian(panda_py.libfranka.Frame.kEndEffector, q.tolist(), O_T_EE.tolist(), EE_T_K))
                 
                 # Calculate joint torques without gravity and coriolis
                 tau = tau_j - gravity - coriolis
