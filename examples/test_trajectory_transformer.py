@@ -135,8 +135,9 @@ def test_transformation(
     
     # Check if trajectory is safe
     print(f"\nSafety Checks:")
-    joint_limits_lower = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
-    joint_limits_upper = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+    from panda_py.constants import JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER
+    joint_limits_lower = np.array(JOINT_LIMITS_LOWER)
+    joint_limits_upper = np.array(JOINT_LIMITS_UPPER)
     
     within_limits = True
     for i in range(7):

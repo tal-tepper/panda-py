@@ -18,6 +18,7 @@ Author: GitHub Copilot
 
 import numpy as np
 import panda_py
+from panda_py.constants import JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER
 from typing import Tuple, Optional, List
 import time
 from scipy.spatial.transform import Rotation as R
@@ -36,8 +37,8 @@ class TrajectoryTransformer:
             verbose: If True, print progress information
         """
         self.verbose = verbose
-        self.joint_limits_lower = np.array(panda_py._JOINT_LIMITS_LOWER)
-        self.joint_limits_upper = np.array(panda_py._JOINT_LIMITS_UPPER)
+        self.joint_limits_lower = np.array(JOINT_LIMITS_LOWER)
+        self.joint_limits_upper = np.array(JOINT_LIMITS_UPPER)
         
     def load_trajectory(self, npy_path: str, primitive_name: str) -> dict:
         """
