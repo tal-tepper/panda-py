@@ -188,18 +188,30 @@ class TrajectoryTransformer:
             # Convert rotation matrix to quaternion (w, x, y, z format)
             rot = R.from_matrix(orientations[i])
             quat = rot.as_quat()  # Returns [x, y, z, w]
-            orientation_quat = np.array([quat[3], quat[0], quat[1], quat[2]])  # Convert to [w, x, y, z]
+            orientation_quat = np.array([[quat[3]], [quat[0]], [quat[1]], [quat[2]]])  # [w, x, y, z] as column vector [4, 1]
+            
+            # Prepare position as column vector [3, 1]
+            position_col = positions[i].reshape(3, 1)
             
             # Use previous solution as initial guess if available
-            q_prev = q_trajectory[-1] if len(q_trajectory) > 0 else (q_init if q_init is not None else panda_py.ik(positions[i], orientation_quat))
+            if len(q_trajectory) > 0:
+                q_prev = q_trajectory[-1].reshape(7, 1)
+            elif q_init is not None:
+                q_prev = q_init.reshape(7, 1)
+            else:
+                # First call, use default
+                q_prev = panda_py.ik(position_col, orientation_quat)
             
             try:
                 # Compute IK
-                q = panda_py.ik(positions[i], orientation_quat, q_prev)
+                q = panda_py.ik(position_col, orientation_quat, q_prev)
+                
+                # Flatten to 1D array for storage
+                q_flat = q.flatten()
                 
                 # Check joint limits
-                if np.all(q >= self.joint_limits_lower) and np.all(q <= self.joint_limits_upper):
-                    q_trajectory.append(q)
+                if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
+                    q_trajectory.append(q_flat)
                     valid_indices.append(i)
                 else:
                     failed_count += 1

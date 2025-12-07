@@ -257,7 +257,7 @@ if __name__ == '__main__':
     print("Example 1: Testing single transformation\n")
     
     result = test_transformation(
-        npy_path='/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_hard_shell_delicate.npy',
+        npy_path='/home/robot-lab/repos/tactile_panda/primitive_files/primitive_poses_soft_shell_delicate_slow_3.npy',
         primitive_name='try1',
         translation=np.array([0.0, 0.1, 0.0]),  # 10cm in Y
         rotation_axis='z',
