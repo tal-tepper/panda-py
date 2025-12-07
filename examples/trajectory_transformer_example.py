@@ -236,7 +236,9 @@ def example_transform_and_execute():
                 coriolis = np.array(p_model.coriolis(q, dq, I_total, m_total, F_x_Ctotal))
                 
                 # Calculate jacobian (need to pass Frame.kEndEffector, q, F_T_EE, EE_T_K)
-                jacobian = np.array(p_model.zero_jacobian(panda_py.libfranka.Frame.kEndEffector, q.tolist(), O_T_EE.tolist(), EE_T_K))
+                # Returns 42 elements (6x7 flattened in column-major order)
+                jacobian_flat = np.array(p_model.zero_jacobian(panda_py.libfranka.Frame.kEndEffector, q.tolist(), O_T_EE.tolist(), EE_T_K))
+                jacobian = jacobian_flat.reshape(6, 7, order='F')  # Column-major (Fortran order)
                 
                 # Calculate joint torques without gravity and coriolis
                 tau = tau_j - gravity - coriolis
