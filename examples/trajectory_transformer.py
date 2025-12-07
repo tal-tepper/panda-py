@@ -155,9 +155,28 @@ class TrajectoryTransformer:
         # Rotate positions around the first waypoint (end-effector start)
         if rotation_angle != 0.0 or not np.allclose(rotation_matrix, np.eye(3)):
             rotation_center = positions[0]  # First waypoint as rotation center
-            centered_positions = positions - rotation_center
-            rotated_positions = centered_positions @ rotation_matrix.T
-            transformed_positions = rotated_positions + rotation_center + translation
+            
+            # For Z-axis rotation, only rotate X-Y plane, keep Z unchanged
+            if rotation_axis == 'z':
+                # Rotate only in X-Y plane
+                xy_positions = positions[:, :2].copy()  # Extract X,Y
+                xy_center = rotation_center[:2]
+                centered_xy = xy_positions - xy_center
+                # Apply 2D rotation
+                cos_a = np.cos(rotation_angle)
+                sin_a = np.sin(rotation_angle)
+                rot_2d = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+                rotated_xy = centered_xy @ rot_2d.T
+                
+                # Reconstruct 3D positions with original Z values
+                transformed_positions = positions.copy()
+                transformed_positions[:, :2] = rotated_xy + xy_center
+                transformed_positions += translation
+            else:
+                # For X or Y axis rotation, rotate in 3D
+                centered_positions = positions - rotation_center
+                rotated_positions = centered_positions @ rotation_matrix.T
+                transformed_positions = rotated_positions + rotation_center + translation
         else:
             transformed_positions = positions + translation
         
