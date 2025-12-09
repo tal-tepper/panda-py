@@ -128,7 +128,8 @@ void Panda::disableLogging() {
 std::map<std::string, std::list<Eigen::VectorXd>> Panda::getLog() {
   std::map<std::string, std::list<Eigen::VectorXd>> log;
   std::list<Eigen::VectorXd> O_T_EE, elbow, tau_J, control_command_success_rate,
-      O_F_ext_hat_K, K_F_ext_hat_K, q, dq, tau_ext_hat_filtered, time;
+      O_F_ext_hat_K, K_F_ext_hat_K, q, dq, tau_ext_hat_filtered, time,
+      F_T_EE, EE_T_K, m_total, F_x_Ctotal, I_total;
   std::lock_guard<std::mutex> lock(mux_);
   for (auto l : log_) {
     O_T_EE.push_back(Eigen::Map<Eigen::VectorXd>(l.O_T_EE.data(), 16, 1));
@@ -145,6 +146,11 @@ std::map<std::string, std::list<Eigen::VectorXd>> Panda::getLog() {
     tau_ext_hat_filtered.push_back(
         Eigen::Map<Eigen::VectorXd>(l.tau_ext_hat_filtered.data(), 7, 1));
     time.push_back(Eigen::Matrix<double, 1, 1>::Constant(l.time.toMSec()));
+    F_T_EE.push_back(Eigen::Map<Eigen::VectorXd>(l.F_T_EE.data(), 16, 1));
+    EE_T_K.push_back(Eigen::Map<Eigen::VectorXd>(l.EE_T_K.data(), 16, 1));
+    m_total.push_back(Eigen::Matrix<double, 1, 1>::Constant(l.m_total));
+    F_x_Ctotal.push_back(Eigen::Map<Eigen::VectorXd>(l.F_x_Ctotal.data(), 3, 1));
+    I_total.push_back(Eigen::Map<Eigen::VectorXd>(l.I_total.data(), 9, 1));
   }
   log.emplace("O_T_EE", O_T_EE);
   log.emplace("elbow", elbow);
@@ -156,6 +162,11 @@ std::map<std::string, std::list<Eigen::VectorXd>> Panda::getLog() {
   log.emplace("dq", dq);
   log.emplace("tau_ext_hat_filtered", tau_ext_hat_filtered);
   log.emplace("time", time);
+  log.emplace("F_T_EE", F_T_EE);
+  log.emplace("EE_T_K", EE_T_K);
+  log.emplace("m_total", m_total);
+  log.emplace("F_x_Ctotal", F_x_Ctotal);
+  log.emplace("I_total", I_total);
 
   return log;
 }
