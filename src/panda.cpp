@@ -6,6 +6,8 @@
 #include <typeinfo>
 
 #include "constants.h"
+#include "kinematics/fk.h"
+#include "kinematics/ik.h"
 #include "motion/generators.h"
 
 namespace std {
@@ -349,6 +351,99 @@ bool Panda::moveToJointPosition(std::vector<Vector7d> &waypoints,
   auto cb = _createTorqueCallback();
   _runController(cb);
   const Vector7d q = Eigen::Map<const Vector7d>(robot_->readOnce().q.data());
+  return waypoints.back().isApprox(q, success_threshold);
+}
+
+bool Panda::moveToJointPositionWithHeightLimit(
+    const Vector7d &position, double height_limit, double speed_factor,
+    const Vector7d &stiffness, const Vector7d &damping, double dq_threshold,
+    double success_threshold) {
+  std::vector<Vector7d> waypoints;
+  waypoints.push_back(position);
+  return moveToJointPositionWithHeightLimit(waypoints, height_limit,
+                                           speed_factor, stiffness, damping,
+                                           dq_threshold, success_threshold);
+}
+
+bool Panda::moveToJointPositionWithHeightLimit(
+    std::vector<Vector7d> &waypoints, double height_limit, double speed_factor,
+    const Vector7d &stiffness, const Vector7d &damping, double dq_threshold,
+    double success_threshold) {
+  stopController();
+  recover();
+  _setState(robot_->readOnce());
+  _log("info",
+       "Initializing motion generation "
+       "(moveToJointPositionWithHeightLimit, z_min=%.4f).",
+       height_limit);
+
+  // Insert current position as the first waypoint
+  waypoints.push_back(getJointPositions());
+  std::rotate(waypoints.rbegin(), waypoints.rbegin() + 1, waypoints.rend());
+
+  // Validate that start and goal positions don't violate the limit
+  double z_start = kinematics::fk(waypoints.front())(2, 3);
+  double z_goal = kinematics::fk(waypoints.back())(2, 3);
+  if (z_start < height_limit) {
+    _log("error",
+         "Current position already violates height limit (z=%.4f < %.4f).",
+         z_start, height_limit);
+    return false;
+  }
+  if (z_goal < height_limit) {
+    _log("error",
+         "Target position violates height limit (z=%.4f < %.4f).",
+         z_goal, height_limit);
+    return false;
+  }
+
+  // Compute the time-optimal trajectory normally
+  auto base_traj = std::make_shared<motion::JointTrajectory>(
+      waypoints, speed_factor, 0.02);
+  if (base_traj->getDuration() == 0.0) {
+    _log("info", "Already at goal.");
+    return true;
+  }
+
+  // Check if the trajectory violates the height limit
+  const int kCheckSamples = 200;
+  double duration = base_traj->getDuration();
+  double dt = duration / kCheckSamples;
+  bool has_violation = false;
+  for (int i = 0; i <= kCheckSamples; i++) {
+    double t = std::min(i * dt, duration);
+    Vector7d q_sample = base_traj->getJointPositions(t);
+    double z = kinematics::fk(q_sample)(2, 3);
+    if (z < height_limit) {
+      has_violation = true;
+      break;
+    }
+  }
+
+  std::shared_ptr<motion::JointTrajectory> traj;
+  if (!has_violation) {
+    _log("info", "Trajectory is height-safe. Executing directly.");
+    traj = base_traj;
+  } else {
+    // The time-optimal planner produced a trajectory that dips below the
+    // height limit. Wrap it in a HeightConstrainedJointTrajectory which
+    // densely samples the original at 1 ms intervals, corrects every
+    // violating sample via FK→lift z→IK (seeded sequentially for joint-
+    // space continuity), and returns corrected q, q̇, q̈ computed by
+    // finite differences.
+    _log("warning",
+         "Height violation detected. Computing corrected trajectory.");
+    traj = std::make_shared<motion::HeightConstrainedJointTrajectory>(
+        base_traj, height_limit, 0.001);
+  }
+
+  auto ctrl = std::make_shared<controllers::JointTrajectory>(
+      traj, stiffness, damping, dq_threshold);
+  _startController(ctrl);
+  auto cb = _createTorqueCallback();
+  _runController(cb);
+  const Vector7d q =
+      Eigen::Map<const Vector7d>(robot_->readOnce().q.data());
   return waypoints.back().isApprox(q, success_threshold);
 }
 

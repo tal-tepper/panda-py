@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 
+#include "kinematics/fk.h"
 #include "kinematics/ik.h"
 #include "motion/time_optimal/trajectory.h"
 #include "utils.h"
@@ -21,7 +22,8 @@ const double kDefaultCartesianSpeedFactor = 0.2;
 
 class PandaTrajectory {
  public:
-  double getDuration() { return traj_->getDuration(); }
+  virtual double getDuration() { return traj_->getDuration(); }
+  virtual ~PandaTrajectory() = default;
 
  protected:
   bool _computeTrajectory(const time_optimal::Path &path,
@@ -41,19 +43,61 @@ class PandaTrajectory {
 
 class JointTrajectory : public PandaTrajectory {
  public:
+  JointTrajectory() = default;
   JointTrajectory(const std::vector<Vector7d> &waypoints,
                   double speed_factor = kDefaultJointSpeedFactor,
                   double maxDeviation = 0.0, double timeout = kDefaultTimeout);
 
-  Vector7d getJointPositions(double time);
+  virtual Vector7d getJointPositions(double time);
 
-  Vector7d getJointVelocities(double time);
+  virtual Vector7d getJointVelocities(double time);
 
-  Vector7d getJointAccelerations(double time);
+  virtual Vector7d getJointAccelerations(double time);
 
  private:
   time_optimal::Path _convertList(const std::vector<Vector7d> &list,
                                   double maxDeviation = 0.0);
+};
+
+/**
+ * A joint trajectory that enforces a minimum end-effector height.
+ *
+ * It wraps an existing JointTrajectory, densely samples it, and for every
+ * sample whose FK z-coordinate falls below the height limit, it lifts the
+ * Cartesian pose to the limit and solves IK. The corrected joint positions
+ * are stored and velocities/accelerations are computed via finite differences.
+ * This replaces the trajectory algorithm for violating sections while keeping
+ * the original timing.
+ */
+class HeightConstrainedJointTrajectory : public JointTrajectory {
+ public:
+  /**
+   * @param base        The original (possibly violating) joint trajectory.
+   * @param height_limit Minimum allowed EE z-coordinate.
+   * @param dt          Sampling interval in seconds (default 1 ms).
+   */
+  HeightConstrainedJointTrajectory(
+      std::shared_ptr<JointTrajectory> base,
+      double height_limit,
+      double dt = 0.001);
+
+  double getDuration() override;
+  Vector7d getJointPositions(double time) override;
+  Vector7d getJointVelocities(double time) override;
+  Vector7d getJointAccelerations(double time) override;
+
+ private:
+  double duration_;
+  double dt_;
+  int num_samples_;
+  std::vector<Vector7d> q_;    // corrected joint positions
+  std::vector<Vector7d> dq_;   // joint velocities (finite diff)
+  std::vector<Vector7d> ddq_;  // joint accelerations (finite diff)
+
+  int _timeToIndex(double time) const;
+  double _indexToTime(int index) const;
+  // Linear interpolation between two samples
+  Vector7d _lerp(const std::vector<Vector7d> &data, double time) const;
 };
 
 class CartesianTrajectory : public PandaTrajectory {

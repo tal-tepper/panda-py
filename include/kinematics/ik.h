@@ -122,7 +122,7 @@ inline Eigen::Matrix<double, 4, 7> ik_full(Eigen::Matrix<double, 4, 4> O_T_EE,
   // compute q1 & q2
   double thetaP26 = 3.0 * M_PI_2 - theta462 - theta246 - theta342;
   double thetaP = M_PI - thetaP26 - theta26H;
-  double LP6 = L26 * sin(thetaP26) / std::sin(thetaP);
+  double LP6 = L26 * std::sin(thetaP26) / std::sin(thetaP);
 
   std::array<Eigen::Vector3d, 4> z_5_all;
   std::array<Eigen::Vector3d, 4> V2P_all;
@@ -347,7 +347,7 @@ inline Vector7d ik(Eigen::Matrix<double, 4, 4> O_T_EE,
   // IK: compute q1 & q2
   double thetaP26 = 3.0 * M_PI_2 - theta462 - theta246 - theta342;
   double thetaP = M_PI - thetaP26 - theta26H;
-  double LP6 = L26 * sin(thetaP26) / std::sin(thetaP);
+  double LP6 = L26 * std::sin(thetaP26) / std::sin(thetaP);
 
   Eigen::Vector3d z_6_5;
   z_6_5 << std::sin(q[5]), std::cos(q[5]), 0.0;

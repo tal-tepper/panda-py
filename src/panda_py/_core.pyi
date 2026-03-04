@@ -160,6 +160,19 @@ class Panda:
     def move_to_joint_position(self, positions: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], speed_factor: float = 0.2, stiffness: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:
         ...
     @typing.overload
+    def move_to_joint_position_with_height_limit(self, waypoints: list[numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]], height_limit: float, speed_factor: float = 0.2, stiffness: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:
+        """
+                       Same as :py:func:`move_to_joint_position` but checks that the end-effector
+                       height (z-coordinate) never goes below *height_limit* along the trajectory.
+                       If a violation is detected, intermediate safe waypoints are inserted
+                       automatically using inverse kinematics and the trajectory is recomputed.
+        """
+    @typing.overload
+    def move_to_joint_position_with_height_limit(self, positions: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], height_limit: float, speed_factor: float = 0.2, stiffness: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:
+        """
+                       Single-target overload of :py:func:`move_to_joint_position_with_height_limit`.
+        """
+    @typing.overload
     def move_to_pose(self, positions: list[numpy.ndarray[tuple[typing.Literal[3], typing.Literal[1]], numpy.dtype[numpy.float64]]], orientations: list[numpy.ndarray[tuple[typing.Literal[4], typing.Literal[1]], numpy.dtype[numpy.float64]]], speed_factor: float = 0.2, impedance: numpy.ndarray[tuple[typing.Literal[6], typing.Literal[6]], numpy.dtype[numpy.float64]] = ..., damping_ratio: float = 1.0, nullspace_stiffness: float = 15.0, dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:
         """
                        Moves the end-effector from the current pose through the provided waypoints

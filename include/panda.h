@@ -71,6 +71,22 @@ class Panda {
       const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
       double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
       double success_threshold = kMoveToJointPositionThreshold);
+  bool moveToJointPositionWithHeightLimit(
+      const Vector7d &position,
+      double height_limit,
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      const Vector7d &stiffness = controllers::JointTrajectory::kDefaultStiffness,
+      const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
+      double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
+      double success_threshold = kMoveToJointPositionThreshold);
+  bool moveToJointPositionWithHeightLimit(
+      std::vector<Vector7d> &waypoints,
+      double height_limit,
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      const Vector7d &stiffness = controllers::JointTrajectory::kDefaultStiffness,
+      const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
+      double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
+      double success_threshold = kMoveToJointPositionThreshold);
   bool moveToPose(
       std::vector<Eigen::Vector3d> &positions,
       std::vector<Eigen::Matrix<double, 4, 1>> &orientations,

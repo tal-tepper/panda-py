@@ -190,6 +190,38 @@ PYBIND11_MODULE(_core, m) {
            py::arg("dq_threshold") =
                controllers::JointTrajectory::kDefaultDqThreshold,
            py::arg("success_threshold") = Panda::kMoveToJointPositionThreshold)
+      .def("move_to_joint_position_with_height_limit",
+           py::overload_cast<std::vector<Vector7d> &, double, double,
+                             const Vector7d &, const Vector7d &, double,
+                             double>(
+               &Panda::moveToJointPositionWithHeightLimit),
+           py::call_guard<py::gil_scoped_release>(), py::arg("waypoints"),
+           py::arg("height_limit"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("stiffness") =
+               controllers::JointTrajectory::kDefaultStiffness,
+           py::arg("damping") =
+               controllers::JointTrajectory::kDefaultDamping,
+           py::arg("dq_threshold") =
+               controllers::JointTrajectory::kDefaultDqThreshold,
+           py::arg("success_threshold") =
+               Panda::kMoveToJointPositionThreshold)
+      .def("move_to_joint_position_with_height_limit",
+           py::overload_cast<const Vector7d &, double, double,
+                             const Vector7d &, const Vector7d &, double,
+                             double>(
+               &Panda::moveToJointPositionWithHeightLimit),
+           py::call_guard<py::gil_scoped_release>(), py::arg("positions"),
+           py::arg("height_limit"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("stiffness") =
+               controllers::JointTrajectory::kDefaultStiffness,
+           py::arg("damping") =
+               controllers::JointTrajectory::kDefaultDamping,
+           py::arg("dq_threshold") =
+               controllers::JointTrajectory::kDefaultDqThreshold,
+           py::arg("success_threshold") =
+               Panda::kMoveToJointPositionThreshold)
       .def(
           "move_to_pose",
           py::overload_cast<std::vector<Eigen::Vector3d> &,
