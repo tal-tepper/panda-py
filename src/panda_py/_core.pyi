@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy
 import panda_py.libfranka
 import typing
-__all__ = ['AppliedForce', 'AppliedTorque', 'CartesianImpedance', 'CartesianTrajectory', 'Force', 'IntegratedVelocity', 'JointPosition', 'JointTrajectory', 'Panda', 'PandaContext', 'TorqueController', 'fk', 'ik', 'ik_full']
+__all__ = ['AppliedForce', 'AppliedTorque', 'CartesianImpedance', 'CartesianTrajectory', 'Force', 'HeightConstrainedJointTrajectory', 'IntegratedVelocity', 'JointPosition', 'JointTrajectory', 'Panda', 'PandaContext', 'TorqueController', 'fk', 'ik', 'ik_full']
 M = typing.TypeVar("M", bound=int)
 class AppliedForce(TorqueController):
     def __init__(self, damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., filter_coeff: float = 1.0) -> None:
@@ -108,6 +108,22 @@ class JointTrajectory:
         ...
     def get_joint_velocities(self, time: float) -> numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]:
         ...
+class HeightConstrainedJointTrajectory(JointTrajectory):
+    """
+    A joint trajectory that enforces a minimum end-effector height.
+    Wraps an existing JointTrajectory and corrects violating samples via FK/IK.
+    Velocities and accelerations are computed via finite differences.
+    """
+    def __init__(self, base_trajectory: JointTrajectory, height_limit: float, dt: float = 0.001) -> None:
+        ...
+    def get_duration(self) -> float:
+        ...
+    def get_joint_accelerations(self, time: float) -> numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]:
+        ...
+    def get_joint_positions(self, time: float) -> numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]:
+        ...
+    def get_joint_velocities(self, time: float) -> numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]:
+        ...
 class Panda:
     """
     
@@ -171,6 +187,18 @@ class Panda:
     def move_to_joint_position_with_height_limit(self, positions: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], height_limit: float, speed_factor: float = 0.2, stiffness: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:
         """
                        Single-target overload of :py:func:`move_to_joint_position_with_height_limit`.
+        """
+    @typing.overload
+    def compute_trajectory_with_height_limit(self, waypoints: list[numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]], height_limit: float, speed_factor: float = 0.2) -> JointTrajectory:
+        """
+        Computes a joint trajectory with height-limit enforcement and returns it
+        without executing. Returns a :py:class:`JointTrajectory` if no violation
+        is detected, or a :py:class:`HeightConstrainedJointTrajectory` otherwise.
+        """
+    @typing.overload
+    def compute_trajectory_with_height_limit(self, position: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], height_limit: float, speed_factor: float = 0.2) -> JointTrajectory:
+        """
+        Single-target overload of :py:func:`compute_trajectory_with_height_limit`.
         """
     @typing.overload
     def move_to_pose(self, positions: list[numpy.ndarray[tuple[typing.Literal[3], typing.Literal[1]], numpy.dtype[numpy.float64]]], orientations: list[numpy.ndarray[tuple[typing.Literal[4], typing.Literal[1]], numpy.dtype[numpy.float64]]], speed_factor: float = 0.2, impedance: numpy.ndarray[tuple[typing.Literal[6], typing.Literal[6]], numpy.dtype[numpy.float64]] = ..., damping_ratio: float = 1.0, nullspace_stiffness: float = 15.0, dq_threshold: float = 0.001, success_threshold: float = 0.01) -> bool:

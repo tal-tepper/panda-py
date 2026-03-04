@@ -15,6 +15,7 @@
 #include "controllers/joint_trajectory.h"
 #include "controllers/cartesian_trajectory.h"
 #include "controllers/applied_torque.h"
+#include "motion/generators.h"
 #include "utils.h"
 
 namespace py = pybind11;
@@ -87,6 +88,14 @@ class Panda {
       const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
       double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
       double success_threshold = kMoveToJointPositionThreshold);
+  std::shared_ptr<motion::JointTrajectory> computeTrajectoryWithHeightLimit(
+      const Vector7d &position,
+      double height_limit,
+      double speed_factor = motion::kDefaultJointSpeedFactor);
+  std::shared_ptr<motion::JointTrajectory> computeTrajectoryWithHeightLimit(
+      std::vector<Vector7d> &waypoints,
+      double height_limit,
+      double speed_factor = motion::kDefaultJointSpeedFactor);
   bool moveToPose(
       std::vector<Eigen::Vector3d> &positions,
       std::vector<Eigen::Matrix<double, 4, 1>> &orientations,

@@ -447,6 +447,74 @@ bool Panda::moveToJointPositionWithHeightLimit(
   return waypoints.back().isApprox(q, success_threshold);
 }
 
+std::shared_ptr<motion::JointTrajectory>
+Panda::computeTrajectoryWithHeightLimit(
+    const Vector7d &position, double height_limit, double speed_factor) {
+  std::vector<Vector7d> waypoints;
+  waypoints.push_back(position);
+  return computeTrajectoryWithHeightLimit(waypoints, height_limit,
+                                          speed_factor);
+}
+
+std::shared_ptr<motion::JointTrajectory>
+Panda::computeTrajectoryWithHeightLimit(
+    std::vector<Vector7d> &waypoints, double height_limit,
+    double speed_factor) {
+  _setState(robot_->readOnce());
+  _log("info",
+       "Computing trajectory with height limit (z_min=%.4f).", height_limit);
+
+  // Insert current position as the first waypoint
+  waypoints.push_back(getJointPositions());
+  std::rotate(waypoints.rbegin(), waypoints.rbegin() + 1, waypoints.rend());
+
+  // Validate start and goal
+  double z_start = kinematics::fk(waypoints.front())(2, 3);
+  double z_goal = kinematics::fk(waypoints.back())(2, 3);
+  if (z_start < height_limit) {
+    throw std::runtime_error(
+        "Current position already violates height limit (z=" +
+        std::to_string(z_start) + " < " + std::to_string(height_limit) + ").");
+  }
+  if (z_goal < height_limit) {
+    throw std::runtime_error(
+        "Target position violates height limit (z=" +
+        std::to_string(z_goal) + " < " + std::to_string(height_limit) + ").");
+  }
+
+  // Compute the time-optimal trajectory normally
+  auto base_traj = std::make_shared<motion::JointTrajectory>(
+      waypoints, speed_factor, 0.02);
+  if (base_traj->getDuration() == 0.0) {
+    _log("info", "Already at goal.");
+    return base_traj;
+  }
+
+  // Check if the trajectory violates the height limit
+  const int kCheckSamples = 200;
+  double duration = base_traj->getDuration();
+  double dt = duration / kCheckSamples;
+  bool has_violation = false;
+  for (int i = 0; i <= kCheckSamples; i++) {
+    double t = std::min(i * dt, duration);
+    Vector7d q_sample = base_traj->getJointPositions(t);
+    double z = kinematics::fk(q_sample)(2, 3);
+    if (z < height_limit) {
+      has_violation = true;
+      break;
+    }
+  }
+
+  if (!has_violation) {
+    _log("info", "Trajectory is height-safe.");
+    return base_traj;
+  }
+
+  _log("warning", "Height violation detected. Computing corrected trajectory.");
+  return std::make_shared<motion::HeightConstrainedJointTrajectory>(
+      base_traj, height_limit, 0.001);
+}
+
 bool Panda::moveToPose(const Eigen::Vector3d &position,
                        const Eigen::Matrix<double, 4, 1> &orientation,
                        double speed_factor,

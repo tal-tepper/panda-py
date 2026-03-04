@@ -74,7 +74,7 @@ PYBIND11_MODULE(_core, m) {
      Computes end-effector pose in base frame from joint positions.
   )delim");
 
-  py::class_<motion::JointTrajectory>(m, "JointTrajectory")
+  py::class_<motion::JointTrajectory, std::shared_ptr<motion::JointTrajectory>>(m, "JointTrajectory")
       .def(py::init<const std::vector<Vector7d> &, double, double, double>(),
            py::arg("waypoints"),
            py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
@@ -87,6 +87,31 @@ PYBIND11_MODULE(_core, m) {
            py::arg("time"))
       .def("get_joint_accelerations",
            &motion::JointTrajectory::getJointAccelerations, py::arg("time"));
+
+  py::class_<motion::HeightConstrainedJointTrajectory,
+             motion::JointTrajectory,
+             std::shared_ptr<motion::HeightConstrainedJointTrajectory>>(
+      m, "HeightConstrainedJointTrajectory")
+      .def(py::init<std::shared_ptr<motion::JointTrajectory>, double, double>(),
+           py::call_guard<py::gil_scoped_release>(),
+           py::arg("base_trajectory"),
+           py::arg("height_limit"),
+           py::arg("dt") = 0.001,
+           R"delim(
+             A joint trajectory that enforces a minimum end-effector height.
+             Wraps an existing JointTrajectory and corrects violating samples
+             via FK/IK. Velocities and accelerations are computed via finite differences.
+           )delim")
+      .def("get_duration", &motion::HeightConstrainedJointTrajectory::getDuration)
+      .def("get_joint_positions",
+           &motion::HeightConstrainedJointTrajectory::getJointPositions,
+           py::arg("time"))
+      .def("get_joint_velocities",
+           &motion::HeightConstrainedJointTrajectory::getJointVelocities,
+           py::arg("time"))
+      .def("get_joint_accelerations",
+           &motion::HeightConstrainedJointTrajectory::getJointAccelerations,
+           py::arg("time"));
 
   py::class_<motion::CartesianTrajectory>(m, "CartesianTrajectory")
       .def(py::init<const std::vector<Eigen::Matrix<double, 3, 1>> &,
@@ -222,6 +247,28 @@ PYBIND11_MODULE(_core, m) {
                controllers::JointTrajectory::kDefaultDqThreshold,
            py::arg("success_threshold") =
                Panda::kMoveToJointPositionThreshold)
+      .def("compute_trajectory_with_height_limit",
+           py::overload_cast<std::vector<Vector7d> &, double, double>(
+               &Panda::computeTrajectoryWithHeightLimit),
+           py::call_guard<py::gil_scoped_release>(), py::arg("waypoints"),
+           py::arg("height_limit"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           R"delim(
+             Computes a joint trajectory with height-limit enforcement and returns it
+             without executing. The returned trajectory object has the same interface
+             as :py:class:`JointTrajectory` (get_duration, get_joint_positions, etc.).
+             If no height violation is detected, a regular JointTrajectory is returned;
+             otherwise a HeightConstrainedJointTrajectory is returned.
+           )delim")
+      .def("compute_trajectory_with_height_limit",
+           py::overload_cast<const Vector7d &, double, double>(
+               &Panda::computeTrajectoryWithHeightLimit),
+           py::call_guard<py::gil_scoped_release>(), py::arg("position"),
+           py::arg("height_limit"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           R"delim(
+             Single-target overload of :py:func:`compute_trajectory_with_height_limit`.
+           )delim")
       .def(
           "move_to_pose",
           py::overload_cast<std::vector<Eigen::Vector3d> &,
