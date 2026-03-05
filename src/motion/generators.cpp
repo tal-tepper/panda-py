@@ -5,6 +5,7 @@
 #include <numeric>
 
 #include "constants.h"
+#include "kinematics/fk.h"
 
 using namespace std;
 using namespace Eigen;
