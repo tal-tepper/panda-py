@@ -21,7 +21,9 @@ import panda_py
 from panda_py.constants import JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER
 from typing import Tuple, Optional, List
 import time
+import scipy
 from scipy.spatial.transform import Rotation as R
+import logging
 
 
 class TrajectoryTransformer:
@@ -29,16 +31,17 @@ class TrajectoryTransformer:
     Transform recorded robot trajectories by applying Cartesian transformations.
     """
     
-    def __init__(self, verbose: bool = True):
+    def __init__(self, logger: logging.Logger, panda):
         """
         Initialize the transformer.
         
         Args:
-            verbose: If True, print progress information
+            logger: Logger instance for logging messages
         """
-        self.verbose = verbose
+        self.logger = logger
         self.joint_limits_lower = np.array(JOINT_LIMITS_LOWER)
         self.joint_limits_upper = np.array(JOINT_LIMITS_UPPER)
+        self.panda = panda
         
     def load_trajectory(self, npy_path: str, primitive_name: str) -> dict:
         """
@@ -59,8 +62,7 @@ class TrajectoryTransformer:
         
         trajectory_data = loaded_data[primitive_name]
         
-        if self.verbose:
-            print(f"✓ Loaded primitive '{primitive_name}' with {len(trajectory_data['q'])} waypoints")
+        self.logger.info(f"✓ Loaded primitive '{primitive_name}' with {len(trajectory_data['q'])} waypoints")
             
         return trajectory_data
     
@@ -79,9 +81,7 @@ class TrajectoryTransformer:
         positions = np.zeros((n_waypoints, 3))
         orientations = np.zeros((n_waypoints, 3, 3))
         
-        if self.verbose:
-            print(f"Converting {n_waypoints} waypoints to Cartesian space...")
-        
+        self.logger.info(f"Converting {n_waypoints} waypoints to Cartesian space...")
         start_time = time.time()
         
         for i, q in enumerate(q_trajectory):
@@ -89,15 +89,14 @@ class TrajectoryTransformer:
             positions[i] = pose[:3, 3]  # Extract translation
             orientations[i] = pose[:3, :3]  # Extract rotation matrix
             
-            if self.verbose and i % 100 == 0 and i > 0:
-                elapsed = time.time() - start_time
-                remaining = (elapsed / i) * (n_waypoints - i)
-                print(f"  Progress: {i}/{n_waypoints} ({i/n_waypoints*100:.1f}%) - "
-                      f"Est. remaining: {remaining:.1f}s")
+            # if i % 100 == 0 and i > 0:
+            #     elapsed = time.time() - start_time
+            #     remaining = (elapsed / i) * (n_waypoints - i)
+            #     self.logger.debug(f"  Progress: {i}/{n_waypoints} ({i/n_waypoints*100:.1f}%) - "
+            #           f"Est. remaining: {remaining:.1f}s")
         
-        if self.verbose:
-            elapsed = time.time() - start_time
-            print(f"✓ Conversion complete in {elapsed:.2f}s")
+        elapsed = time.time() - start_time
+        self.logger.info(f"✓ Conversion complete in {elapsed:.2f}s")
             
         return positions, orientations
     
@@ -109,7 +108,10 @@ class TrajectoryTransformer:
         rotation_matrix: Optional[np.ndarray] = None,
         rotation_axis: Optional[str] = None,
         rotation_angle: float = 0.0,
-        rotate_orientation: bool = False
+        rotate_orientation: bool = False,
+        tilt_angle: float = 0.0,
+        tilt_direction: Optional[np.ndarray] = None,
+        tilt_trajectory: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Apply translation and rotation to Cartesian trajectory.
@@ -123,20 +125,24 @@ class TrajectoryTransformer:
             rotation_angle: Angle in radians (used with rotation_axis)
             rotate_orientation: If True, also rotate end-effector orientations.
                                If False (default), only rotate trajectory positions around start point.
+            tilt_angle: Additional tilt angle in radians towards tilt_direction (applied after translation and rotation)
+            tilt_direction: Direction vector [dx, dy] in XY plane to tilt towards (optional)
+            tilt_trajectory: If True, also tilt trajectory positions; if False (default), only tilt end-effector orientation
             
         Returns:
             transformed_positions: Transformed positions
             transformed_orientations: Transformed orientations
         """
-        if self.verbose:
-            print(f"Applying transformation:")
-            print(f"  Translation: {translation}")
-            if rotation_matrix is not None:
-                print(f"  Using provided rotation matrix")
-            elif rotation_axis:
-                print(f"  Rotation: {np.degrees(rotation_angle):.1f}° about {rotation_axis}-axis (base frame)")
-                print(f"  Rotation center: end-effector start position")
-            print(f"  Rotate orientation: {rotate_orientation}")
+        self.logger.info(f"Applying transformation:")
+        self.logger.info(f"  Translation: {translation}")
+        if rotation_matrix is not None:
+            self.logger.info(f"  Using provided rotation matrix")
+        elif rotation_axis:
+            self.logger.info(f"  Rotation: {np.degrees(rotation_angle):.1f}° about {rotation_axis}-axis (base frame)")
+            self.logger.info(f"  Rotation center: end-effector start position")
+        self.logger.info(f"  Rotate orientation: {rotate_orientation}")
+        if tilt_angle != 0.0 and tilt_direction is not None:
+            self.logger.info(f"  Tilt: {np.degrees(tilt_angle):.1f}° towards direction [{tilt_direction[0]:.4f}, {tilt_direction[1]:.4f}]")
         
         # Create rotation matrix if not provided
         if rotation_matrix is None:
@@ -182,12 +188,50 @@ class TrajectoryTransformer:
         else:
             transformed_positions = positions + translation
         
-        # For rotate_orientation, we keep orientations unchanged here
-        # The rotation will be applied directly to joint 7 after IK
+        # Apply tilt transformation if specified (towards tilt_direction)
+        tilt_rot = None
+        if tilt_angle != 0.0 and tilt_direction is not None:
+            # Create axis perpendicular to tilt_direction in XY plane
+            # If tilting towards (dx, dy), rotate around axis perpendicular to it
+            dx, dy = tilt_direction[0], tilt_direction[1]
+            direction_norm = np.sqrt(dx**2 + dy**2)
+            
+            if direction_norm > 1e-9:
+                # Normalize direction
+                dx_norm = dx / direction_norm
+                dy_norm = dy / direction_norm
+                
+                # Rotation axis is perpendicular to direction in XY plane
+                # Perpendicular to (dx, dy, 0) is (dy, -dx, 0) for correct tilt direction
+                tilt_axis = np.array([dy_norm, -dx_norm, 0.0])
+                
+                # Create rotation matrix for tilt
+                tilt_rot = R.from_rotvec(tilt_axis * tilt_angle).as_matrix()
+                
+                # Optionally apply tilt rotation to trajectory positions
+                if tilt_trajectory:
+                    tilt_center = transformed_positions[0]
+                    centered_positions = transformed_positions - tilt_center
+                    tilted_positions = centered_positions @ tilt_rot.T
+                    transformed_positions = tilted_positions + tilt_center
+        
+        # Apply orientation transformations
+        # Start with original orientations
         transformed_orientations = orientations.copy()
         
-        if self.verbose:
-            print(f"✓ Transformation applied")
+        # Apply main rotation to orientations if rotate_orientation is True
+        # This is applied BEFORE tilt
+        if rotate_orientation and not np.allclose(rotation_matrix, np.eye(3)):
+            for i in range(len(transformed_orientations)):
+                transformed_orientations[i] = rotation_matrix @ transformed_orientations[i]
+        
+        # Apply tilt rotation to orientations if tilt was specified (AFTER main rotation)
+        if tilt_rot is not None:
+            # Apply the same tilt rotation to all end-effector orientations
+            for i in range(len(transformed_orientations)):
+                transformed_orientations[i] = tilt_rot @ transformed_orientations[i]
+        
+        self.logger.info(f"✓ Transformation applied")
             
         return transformed_positions, transformed_orientations
     
@@ -197,119 +241,239 @@ class TrajectoryTransformer:
         orientations: np.ndarray,
         q_init: Optional[np.ndarray] = None,
         debug_info: Optional[dict] = None,
-        ee_rotation_angle: float = 0.0
+        ee_rotation_angle: float = 0.0,
+        collect_failure_details: bool = False,
+        use_hqp: bool = True,
+        z_min: Optional[float] = None
     ) -> Tuple[np.ndarray, List[int]]:
         """
         Convert Cartesian trajectory to joint space using inverse kinematics.
         
+        Uses Hierarchical Quadratic Programming (HQP) based IK by default, which ensures
+        continuous joint trajectories by always seeding from the previous solution.
+        
+        The HQP solver:
+            min_{dq} 0.5 * ||dq||^2 + regularization
+        Subject to:
+            Primary Task: J(q) * dq = dx  (Cartesian trajectory tracking)
+            Height Constraint: z(q) + dz/dq * dq >= z_min  (floor avoidance)
+            Joint Limits: q_min <= q + dq <= q_max
+        
         Args:
             positions: Array of 3D positions [n_waypoints, 3]
             orientations: Array of 3x3 rotation matrices [n_waypoints, 3, 3]
-            q_init: Initial joint configuration for IK (uses first solution if None)
+            q_init: Initial joint configuration - REQUIRED for continuous trajectories.
+                    This is the starting configuration from which the trajectory begins.
             ee_rotation_angle: Additional rotation to add to joint 7 (EE flange rotation)
+            collect_failure_details: If True, collect detailed info about each IK failure
+            use_hqp: If True (default), use HQP-based IK with height constraint.
+                     If False, use standard analytical IK.
+            z_min: Minimum allowed end-effector height. If None, computed as
+                   min(positions[:,2]) - 0.001 (trajectory min minus small margin).
             
         Returns:
             q_trajectory: Joint positions [n_valid_waypoints, 7]
             valid_indices: Indices of waypoints that had valid IK solutions
+            
+        If collect_failure_details is True, also sets self.ik_failure_details with list of dicts:
+            - 'index': waypoint index
+            - 'reason': 'nan', 'joint_limits', 'hqp_failed', or 'exception'
+            - 'position': Cartesian position
+            - 'details': Additional details (e.g., joint values, exception message)
         """
         n_waypoints = len(positions)
         q_trajectory = []
         valid_indices = []
         failed_count = 0
+        hqp_used_count = 0
         
-        if self.verbose:
-            print(f"Computing inverse kinematics for {n_waypoints} waypoints...")
+        # Collect failure details if requested
+        if collect_failure_details:
+            self.ik_failure_details = []
+        
+        # Compute minimum z constraint from trajectory if not provided
+        if z_min is None:
+            z_min = np.min(positions[:, 2]) - 0.001
+        
+        self.logger.info(f"Computing inverse kinematics for {n_waypoints} waypoints...")
+        if use_hqp:
+            self.logger.info(f"  Using HQP-based IK with height constraint z_min={z_min:.4f}m")
         
         start_time = time.time()
         
+        # Get initial configuration - critical for continuous trajectories
+        if q_init is None:
+            # Try to get from first waypoint using analytical IK as seed
+            rot = R.from_matrix(orientations[0])
+            quat = rot.as_quat()
+            position_col = positions[0].reshape(3, 1)
+            orientation_quat = quat.reshape(4, 1)
+            q_seed = panda_py.ik(position_col, orientation_quat)
+            if np.any(np.isnan(q_seed)):
+                self.logger.warning("Could not find initial IK solution. Using default configuration.")
+                q_seed = np.array([0.0, -np.pi/4, 0.0, -3*np.pi/4, 0.0, np.pi/2, np.pi/4])
+            q_init = q_seed.flatten()
+        
+        # Current joint configuration - updated after each successful IK
+        q_current = q_init.copy()
+        
         for i in range(n_waypoints):
-            # Convert rotation matrix to quaternion (x, y, z, w format for panda_py.ik)
+            # Convert rotation matrix to quaternion (x, y, z, w format)
             rot = R.from_matrix(orientations[i])
             quat = rot.as_quat()  # Returns [x, y, z, w]
-            orientation_quat = quat.reshape(4, 1)  # Keep as [x, y, z, w] column vector [4, 1]
-            
-            # Prepare position as column vector [3, 1]
-            position_col = positions[i].reshape(3, 1)
-            
-            # Use previous solution as initial guess if available
-            if len(q_trajectory) > 0:
-                q_prev = q_trajectory[-1].reshape(7, 1)
-            elif q_init is not None:
-                q_prev = q_init.reshape(7, 1)
-            else:
-                # First call, use default
-                q_prev = panda_py.ik(position_col, orientation_quat)
             
             try:
-                # Compute IK
-                q = panda_py.ik(position_col, orientation_quat, q_prev)
+                q_flat = None
+                ik_success = False
                 
-                # Flatten to 1D array for storage
-                q_flat = q.flatten()
+                if use_hqp:
+                    # Use HQP-based IK with height constraint
+                    # Always seed from the previous solution for continuity
+                    hqp_result = panda_py.ik_hqp(
+                        positions[i],
+                        quat,
+                        q_current,
+                        z_min,
+                        dt=0.001,
+                        max_iterations=100,
+                        position_tolerance=1e-4,
+                        orientation_tolerance=1e-3,
+                        damping=0.05,
+                        step_size=0.5
+                    )
+                    
+                    if hqp_result.success:
+                        q_flat = np.array(hqp_result.q).flatten()
+                        ik_success = True
+                        hqp_used_count += 1
+                    else:
+                        # For trajectory tracking, accept solutions that are close enough
+                        # This prevents gaps in the trajectory
+                        if hqp_result.position_error < 0.01 and hqp_result.orientation_error < 0.1:
+                            q_flat = np.array(hqp_result.q).flatten()
+                            ik_success = True
+                            hqp_used_count += 1
+                            if i < 3:
+                                self.logger.debug(f"  Waypoint {i}: Accepting relaxed solution "
+                                                f"(pos_err={hqp_result.position_error:.4f}, "
+                                                f"ori_err={hqp_result.orientation_error:.4f})")
+                        elif collect_failure_details:
+                            self.ik_failure_details.append({
+                                'index': i,
+                                'reason': 'hqp_failed',
+                                'position': positions[i].copy(),
+                                'details': f"pos_err={hqp_result.position_error:.4f}, "
+                                          f"ori_err={hqp_result.orientation_error:.4f}, "
+                                          f"iters={hqp_result.iterations}"
+                            })
+                else:
+                    # Standard analytical IK
+                    position_col = positions[i].reshape(3, 1)
+                    orientation_quat = quat.reshape(4, 1)
+                    q = panda_py.ik(position_col, orientation_quat, q_current.reshape(7, 1), q_init[6])
+                    q_flat = q.flatten()
+                    if not np.any(np.isnan(q_flat)):
+                        ik_success = True
                 
                 # Check for NaN (IK failure)
-                if np.any(np.isnan(q_flat)):
+                if not ik_success or q_flat is None or np.any(np.isnan(q_flat)):
                     failed_count += 1
-                    if i < 3 and self.verbose:
-                        print(f"  Debug: Waypoint {i} IK returned NaN (no solution found)")
-                        print(f"    Transformed position: {positions[i]}")
-                        if debug_info and 'translation' in debug_info:
-                            print(f"    Translation applied: {debug_info['translation']}")
+                    if failed_count < 5:
+                        self.logger.debug(f"  Debug: Waypoint {i} IK failed")
+                        self.logger.debug(f"    Target position: {positions[i]}, z_min={z_min:.4f}")
+                    if collect_failure_details and use_hqp:
+                        pass  # Already added above
+                    elif collect_failure_details:
+                        self.ik_failure_details.append({
+                            'index': i,
+                            'reason': 'nan',
+                            'position': positions[i].copy(),
+                            'details': f"IK returned NaN - no solution found"
+                        })
                     continue
                 
                 # Add EE rotation to joint 7 (flange rotation)
                 if ee_rotation_angle != 0.0:
-                    q_flat[6] += ee_rotation_angle  # Joint 7 is index 6
+                    q_flat[6] -= ee_rotation_angle  # Joint 7 is index 6
                 
                 # Check joint limits
                 if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
                     q_trajectory.append(q_flat)
                     valid_indices.append(i)
+                    # Update current configuration for next iteration (key for continuity!)
+                    q_current = q_flat.copy()
                 else:
                     failed_count += 1
-                    if i < 3 and self.verbose:  # Print first few failures for debugging
-                        print(f"  Debug: Waypoint {i} failed joint limits check")
-                        for j in range(7):
-                            if q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]:
-                                print(f"    Joint {j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
+                    violated_joints = []
+                    for j in range(7):
+                        if q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]:
+                            violated_joints.append(f"J{j}: {np.degrees(q_flat[j]):.2f}° "
+                                                  f"(limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, "
+                                                  f"{np.degrees(self.joint_limits_upper[j]):.2f}°])")
+                    if failed_count < 5:
+                        self.logger.debug(f"  Debug: Waypoint {i} failed joint limits check")
+                        for vj in violated_joints:
+                            self.logger.debug(f"    {vj}")
+                    if collect_failure_details:
+                        self.ik_failure_details.append({
+                            'index': i,
+                            'reason': 'joint_limits',
+                            'position': positions[i].copy(),
+                            'details': '; '.join(violated_joints),
+                            'q_solution': q_flat.copy()
+                        })
             except Exception as e:
                 failed_count += 1
-                if i < 3 and self.verbose:  # Print first few exceptions for debugging
-                    print(f"  Debug: Waypoint {i} IK exception: {type(e).__name__}: {e}")
-            
-            if self.verbose and i % 100 == 0 and i > 0:
-                elapsed = time.time() - start_time
-                remaining = (elapsed / i) * (n_waypoints - i)
-                success_rate = len(valid_indices) / i * 100
-                print(f"  Progress: {i}/{n_waypoints} ({i/n_waypoints*100:.1f}%) - "
-                      f"Success rate: {success_rate:.1f}% - "
-                      f"Est. remaining: {remaining:.1f}s")
+                if failed_count < 5:
+                    self.logger.debug(f"  Debug: Waypoint {i} IK exception: {type(e).__name__}: {e}")
+                if collect_failure_details:
+                    self.ik_failure_details.append({
+                        'index': i,
+                        'reason': 'exception',
+                        'position': positions[i].copy(),
+                        'details': f"{type(e).__name__}: {e}"
+                    })
         
-        if self.verbose:
-            elapsed = time.time() - start_time
-            success_rate = len(valid_indices) / n_waypoints * 100
-            print(f"✓ IK computation complete in {elapsed:.2f}s")
-            print(f"  Valid waypoints: {len(valid_indices)}/{n_waypoints} ({success_rate:.1f}%)")
-            if failed_count > 0:
-                print(f"  ⚠ Failed waypoints: {failed_count} (outside joint limits or no solution)")
-        
+        elapsed = time.time() - start_time
+        success_rate = len(valid_indices) / n_waypoints * 100 if n_waypoints > 0 else 0
+        self.logger.info(f"✓ IK computation complete in {elapsed:.2f}s")
+        self.logger.info(f"  Valid waypoints: {len(valid_indices)}/{n_waypoints} ({success_rate:.1f}%)")
+        if use_hqp:
+            self.logger.info(f"  HQP IK used: {hqp_used_count}/{n_waypoints}")
+        if failed_count > 0:
+            self.logger.warning(f"  ⚠ Failed waypoints: {failed_count} (outside joint limits or no solution)")
+
+        # Interpolate to fill in gaps left by failed IK waypoints
+        if len(q_trajectory) > 1 and len(valid_indices) < n_waypoints:
+            q_full = np.empty((n_waypoints, 7))
+            q_arr = np.array(q_trajectory)
+            vi = np.array(valid_indices)
+            for j in range(7):
+                q_full[:, j] = np.interp(
+                    np.arange(n_waypoints), vi, q_arr[:, j])
+            interp_count = n_waypoints - len(valid_indices)
+            self.logger.info(f"  Interpolated {interp_count} failed waypoints in joint space")
+            return q_full, list(range(n_waypoints))
+
         return np.array(q_trajectory), valid_indices
     
     def downsample_trajectory(
         self,
         q_trajectory: np.ndarray,
+        positions: np.ndarray,
         max_waypoints: int = 100,
         min_distance: float = 0.01
     ) -> np.ndarray:
         """
         Downsample trajectory intelligently to reduce waypoints while preserving shape.
         
-        Uses a combination of:
-        1. Minimum distance criterion (skip waypoints too close together)
-        2. Maximum waypoint limit (uniform downsampling if needed)
+        Two-stage approach:
+        1. First pass: Keep points that are at least min_distance apart (greedy)
+        2. Second pass: If fewer than max_waypoints, add farthest points to fill up
         
         Args:
             q_trajectory: Full joint trajectory [n_waypoints, 7]
+            positions: Cartesian positions [n_waypoints, 3] corresponding to q_trajectory
             max_waypoints: Maximum number of waypoints to keep
             min_distance: Minimum joint-space distance between waypoints (radians)
             
@@ -317,34 +481,68 @@ class TrajectoryTransformer:
             downsampled_trajectory: Reduced trajectory [n_reduced, 7]
         """
         if len(q_trajectory) <= max_waypoints:
-            if self.verbose:
-                print(f"Trajectory already has {len(q_trajectory)} waypoints (≤ {max_waypoints})")
+            self.logger.info(f"Trajectory already has {len(q_trajectory)} waypoints (≤ {max_waypoints})")
             return q_trajectory
         
-        if self.verbose:
-            print(f"Downsampling trajectory from {len(q_trajectory)} to ~{max_waypoints} waypoints...")
+        self.logger.info(f"Downsampling trajectory from {len(q_trajectory)} to {max_waypoints} waypoints...")
         
-        # First pass: remove waypoints that are too close
-        reduced = [q_trajectory[0]]
+        # First pass: Greedy selection with min_distance criterion
+        selected_indices = [0]  # Always start with first point
+        
         for i in range(1, len(q_trajectory)):
-            dist = np.linalg.norm(q_trajectory[i] - reduced[-1])
+            # Check distance to last selected point
+            dist = np.linalg.norm(q_trajectory[i] - q_trajectory[selected_indices[-1]])
             if dist >= min_distance:
-                reduced.append(q_trajectory[i])
+                selected_indices.append(i)
         
-        reduced = np.array(reduced)
+        # Ensure last point is included
+        if selected_indices[-1] != len(q_trajectory) - 1:
+            selected_indices.append(len(q_trajectory) - 1)
         
-        if self.verbose:
-            print(f"  After distance filtering: {len(reduced)} waypoints")
+        self.logger.debug(f"  After min_distance filtering: {len(selected_indices)} waypoints")
         
-        # Second pass: uniform downsampling if still too many
-        if len(reduced) > max_waypoints:
-            indices = np.linspace(0, len(reduced) - 1, max_waypoints, dtype=int)
-            reduced = reduced[indices]
-            if self.verbose:
-                print(f"  After uniform downsampling: {len(reduced)} waypoints")
+        # Second pass: If we have fewer than max_waypoints, add farthest points
+        if len(selected_indices) < max_waypoints:
+            remaining_indices = set(range(len(q_trajectory))) - set(selected_indices)
+            
+            # Calculate distances from each remaining point to nearest selected point
+            def get_min_distance_to_selected(idx):
+                min_dist = float('inf')
+                for sel_idx in selected_indices:
+                    dist = np.linalg.norm(positions[idx] - positions[sel_idx])
+                    min_dist = min(min_dist, dist)
+                return min_dist
+            
+            # Add points iteratively, always choosing the farthest one
+            while len(selected_indices) < max_waypoints and remaining_indices:
+                # Find the remaining point that is farthest from all selected points
+                farthest_idx = max(remaining_indices, key=get_min_distance_to_selected)
+                selected_indices.append(farthest_idx)
+                remaining_indices.remove(farthest_idx)
+            
+            self.logger.debug(f"  After adding farthest points: {len(selected_indices)} waypoints")
         
-        if self.verbose:
-            print(f"✓ Downsampling complete: {len(q_trajectory)} → {len(reduced)} waypoints")
+        # If we have more than max_waypoints, uniformly subsample
+        if len(selected_indices) > max_waypoints:
+            # Sort first to maintain order
+            selected_indices.sort()
+            # Uniformly subsample
+            step = len(selected_indices) / max_waypoints
+            final_indices = [selected_indices[int(i * step)] for i in range(max_waypoints)]
+            # Ensure first and last are included
+            if final_indices[0] != 0:
+                final_indices[0] = 0
+            if final_indices[-1] != len(q_trajectory) - 1:
+                final_indices[-1] = len(q_trajectory) - 1
+            selected_indices = final_indices
+            self.logger.debug(f"  After uniform subsampling: {len(selected_indices)} waypoints")
+        
+        # Sort indices to maintain trajectory order
+        selected_indices.sort()
+        
+        reduced = q_trajectory[selected_indices]
+        
+        self.logger.info(f"✓ Downsampling complete: {len(q_trajectory)} → {len(reduced)} waypoints")
         
         return reduced
     
@@ -380,21 +578,6 @@ class TrajectoryTransformer:
         
         return estimates
     
-    def print_time_estimate(self, n_waypoints: int, max_downsampled: int = 100):
-        """Print formatted time estimate."""
-        estimates = self.estimate_computation_time(n_waypoints, max_downsampled)
-        
-        print("\n" + "="*60)
-        print("ESTIMATED COMPUTATION TIME")
-        print("="*60)
-        print(f"Forward Kinematics:      {estimates['forward_kinematics']:>6.2f}s")
-        print(f"Inverse Kinematics:      {estimates['inverse_kinematics']:>6.2f}s")
-        print(f"Downsampling:            {estimates['downsampling']:>6.2f}s")
-        print(f"Trajectory Generation:   {estimates['trajectory_generation']:>6.2f}s")
-        print("-"*60)
-        print(f"TOTAL ESTIMATED TIME:    {estimates['total']:>6.2f}s")
-        print("="*60 + "\n")
-    
     def transform_trajectory(
         self,
         npy_path: str,
@@ -406,7 +589,14 @@ class TrajectoryTransformer:
         rotate_orientation: bool = False,
         max_waypoints: int = 100,
         min_distance: float = 0.01,
-        speed_factor: float = 0.1
+        speed_factor: float = 0.1,
+        phantom_boundaries: Optional[dict] = None,
+        skip_downsampling: bool = False,
+        q_init = None,
+        tilt_angle: float = 0.0,
+        tilt_direction: Optional[np.ndarray] = None,
+        tilt_trajectory: bool = False,
+        collect_ik_failure_details: bool = False
     ) -> dict:
         """
         Complete pipeline to transform a recorded trajectory.
@@ -423,22 +613,24 @@ class TrajectoryTransformer:
             max_waypoints: Maximum waypoints after downsampling
             min_distance: Minimum joint distance between waypoints
             speed_factor: Speed factor for trajectory generation (0.0-1.0)
+            phantom_boundaries: Dict with {'x': [min, max], 'y': [min, max], 'z': [min, max]}
+                               for boundary checking. If provided, trajectory will be validated
+                               and trimmed if needed (requires at least 50% valid waypoints).
+            skip_downsampling: If True, skip downsampling step (use pre-downsampled primitives)
+            tilt_angle: Additional tilt angle in radians towards tilt_direction (0-10 degrees recommended)
+            tilt_direction: Direction vector [dx, dy] in XY plane to tilt towards (e.g., [-grid_x, -grid_y] to tilt towards center)
+            tilt_trajectory: If True, also tilt trajectory positions; if False (default), only tilt end-effector orientation
+            collect_ik_failure_details: If True, include detailed IK failure info in result
             
         Returns:
-            Dictionary with transformed trajectory data
+            Dictionary with transformed trajectory data (includes 'ik_failure_details' if collect_ik_failure_details=True)
         """
-        print("\n" + "="*60)
-        print("TRAJECTORY TRANSFORMATION PIPELINE")
-        print("="*60 + "\n")
-        
         # Load trajectory
         trajectory_data = self.load_trajectory(npy_path, primitive_name)
         q_original = np.array(trajectory_data['q'])
         
-        # Print time estimate
-        self.print_time_estimate(len(q_original), max_waypoints)
-        
-        # Convert to Cartesian
+        # Always compute positions and orientations from joints using FK
+        # This accounts for what the robot is holding (load parameters)
         positions, orientations = self.joints_to_cartesian(q_original)
         
         # Apply transformation
@@ -448,25 +640,72 @@ class TrajectoryTransformer:
             rotation_matrix=rotation_matrix,
             rotation_axis=rotation_axis,
             rotation_angle=rotation_angle,
-            rotate_orientation=rotate_orientation
+            rotate_orientation=rotate_orientation,
+            tilt_angle=tilt_angle,
+            tilt_direction=tilt_direction,
+            tilt_trajectory=tilt_trajectory
         )
+        
+        # Check boundaries if provided (relative to trajectory start)
+        is_valid = True
+        trimmed_index = None
+        if phantom_boundaries is not None:
+            self.logger.info(f"Checking trajectory boundaries (relative to start position)...")
+            
+            # Get trajectory start position for relative checking
+            trajectory_start = positions_tf[0]
+            
+            for i, pos in enumerate(positions_tf):
+                # Check position relative to trajectory start
+                relative_pos = pos
+                if not (phantom_boundaries['x'][0] <= relative_pos[0] <= phantom_boundaries['x'][1] and
+                        phantom_boundaries['y'][0] <= relative_pos[1] <= phantom_boundaries['y'][1] and
+                        phantom_boundaries['z'][0] <= relative_pos[2] <= phantom_boundaries['z'][1]):
+                    is_valid = False
+                    trimmed_index = i
+                    self.logger.warning(f"  ⚠ Trajectory out of boundaries at step {i}/{len(positions_tf)}. relative_pos:{relative_pos},phantom_boundaries:{phantom_boundaries}")
+                    break
+            
+            # Handle invalid trajectories
+            if not is_valid:
+                if trimmed_index is not None and trimmed_index / len(positions_tf) >= 0.5:
+                    # Trim trajectory if more than 50% is valid
+                    self.logger.info(f"  ✓ Trimming trajectory to {trimmed_index} steps (>{50}% valid)")
+                    positions_tf = positions_tf[:trimmed_index]
+                    orientations_tf = orientations_tf[:trimmed_index]
+                else:
+                    # More than 50% is out of bounds, reject the trajectory
+                    self.logger.error(f"  ✗ Trajectory invalid: less than 50% waypoints within boundaries. Aborting transformation.:{trimmed_index}/{len(positions_tf)}")
+                    return None
         
         # Convert back to joint space
         # If rotate_orientation is True, add rotation to joint 7 after IK
         ee_rotation = rotation_angle if (rotate_orientation and rotation_axis == 'z') else 0.0
+        self.logger.info(f"min z is :{np.min(positions_tf[:,2])}, max z is:{np.max(positions_tf[:,2])} z boundaries:{phantom_boundaries['z'] if phantom_boundaries else 'N/A'}")
+        if q_init is None:
+            q_init = self.panda.q
         q_transformed, valid_indices = self.cartesian_to_joints(
-            positions_tf, orientations_tf, q_init=q_original[0],
+            positions_tf, orientations_tf, q_init=q_init,
             debug_info={'translation': translation},
-            ee_rotation_angle=ee_rotation
+            ee_rotation_angle=ee_rotation,
+            collect_failure_details=collect_ik_failure_details
         )
+        
+        # Get IK failure details if collected
+        ik_failure_details = getattr(self, 'ik_failure_details', []) if collect_ik_failure_details else []
         
         if len(q_transformed) == 0:
-            raise RuntimeError("No valid IK solutions found! Transformation may be invalid.")
+            self.logger.error("✗ No valid IK solutions found for transformed trajectory. Aborting transformation.")
+            return None
         
-        # Downsample
-        q_downsampled = self.downsample_trajectory(
-            q_transformed, max_waypoints=max_waypoints, min_distance=min_distance
-        )
+        # Downsample (optional, skip if using pre-downsampled primitives)
+        if skip_downsampling:
+            self.logger.info("Skipping downsampling (using pre-downsampled primitive)")
+            q_downsampled = q_transformed
+        else:
+            q_downsampled = self.downsample_trajectory(
+                q_transformed, positions_tf[valid_indices], max_waypoints=max_waypoints, min_distance=min_distance
+            )
         
         # Create result dictionary
         result = {
@@ -481,15 +720,155 @@ class TrajectoryTransformer:
             'translation': translation,
             'rotation_matrix': rotation_matrix if rotation_matrix is not None else np.eye(3),
             'primitive_name': primitive_name,
+            'positions_transformed_all': positions_tf,  # All positions before IK filtering
+            'orientations_transformed_all': orientations_tf,  # All orientations before IK filtering
         }
         
-        print("\n" + "="*60)
-        print("TRANSFORMATION COMPLETE")
-        print("="*60)
-        print(f"Original waypoints:     {len(q_original)}")
-        print(f"Valid IK solutions:     {len(q_transformed)} ({len(q_transformed)/len(q_original)*100:.1f}%)")
-        print(f"Downsampled waypoints:  {len(q_downsampled)}")
-        print("="*60 + "\n")
+        # Add IK failure details if collected
+        if collect_ik_failure_details:
+            result['ik_failure_details'] = ik_failure_details
+            result['ik_success_rate'] = len(valid_indices) / len(positions_tf) * 100
+            result['ik_failed_count'] = len(ik_failure_details)
+        
+        return result
+    
+    def transform_trajectory_cartesian(
+        self,
+        npy_path: str,
+        primitive_name: str,
+        translation: np.ndarray = np.zeros(3),
+        rotation_matrix: Optional[np.ndarray] = None,
+        rotation_axis: Optional[str] = None,
+        rotation_angle: float = 0.0,
+        rotate_orientation: bool = True,
+        max_waypoints: int = 100,
+        min_distance: float = 0.01,
+        speed_factor: float = 0.1,
+        phantom_boundaries: Optional[dict] = None,
+        skip_downsampling: bool = True,
+        q_init: Optional[np.ndarray] = None,
+        tilt_angle: float = 0.0,
+        tilt_direction: Optional[np.ndarray] = None,
+        tilt_trajectory: bool = False
+    ) -> dict:
+        """
+        Transform a recorded trajectory using Cartesian data directly from the primitives file.
+        
+        Unlike transform_trajectory which converts from joint space to Cartesian using FK,
+        this function uses the position/orientation data stored directly in the primitives file.
+        
+        Args:
+            npy_path: Path to trajectory file
+            primitive_name: Name of primitive to load
+            translation: Translation offset [x, y, z] in meters
+            rotation_matrix: 3x3 rotation matrix (optional)
+            rotation_axis: Rotation axis 'x', 'y', or 'z' in base frame (optional)
+            rotation_angle: Rotation angle in radians (optional)
+            rotate_orientation: If True, also rotate end-effector orientations.
+                               If False (default), only rotate trajectory positions.
+            max_waypoints: Maximum waypoints after downsampling
+            min_distance: Minimum joint distance between waypoints
+            speed_factor: Speed factor for trajectory generation (0.0-1.0)
+            phantom_boundaries: Dict with {'x': [min, max], 'y': [min, max], 'z': [min, max]}
+                               for boundary checking. If provided, trajectory will be validated
+                               and trimmed if needed (requires at least 50% valid waypoints).
+            skip_downsampling: If True, skip downsampling step (use pre-downsampled primitives)
+            q_init: Initial joint configuration for IK
+            tilt_angle: Additional tilt angle in radians towards tilt_direction (0-10 degrees recommended)
+            tilt_direction: Direction vector [dx, dy] in XY plane to tilt towards
+            tilt_trajectory: If True, also tilt trajectory positions; if False (default), only tilt end-effector orientation
+            
+        Returns:
+            Dictionary with transformed trajectory data, or None if transformation fails
+        """
+        # Load trajectory
+        trajectory_data = self.load_trajectory(npy_path, primitive_name)
+        
+        # Use Cartesian data directly from the primitives file
+        if 'position' not in trajectory_data or 'orientation' not in trajectory_data:
+            self.logger.error("✗ Primitive file does not contain 'position' or 'orientation' data. "
+                            "Use transform_trajectory() instead to compute from joint data.")
+            return None
+        
+        positions = np.array(trajectory_data['position'])
+        orientations = np.array(trajectory_data['orientation'])
+        
+        self.logger.info(f"✓ Using Cartesian data directly: {len(positions)} waypoints")
+        
+        # Apply transformation
+        positions_tf, orientations_tf = self.apply_transformation(
+            positions, orientations,
+            translation=translation,
+            rotation_matrix=rotation_matrix,
+            rotation_axis=rotation_axis,
+            rotation_angle=rotation_angle,
+            rotate_orientation=rotate_orientation,
+            tilt_angle=tilt_angle,
+            tilt_direction=tilt_direction,
+            tilt_trajectory=tilt_trajectory
+        )
+        
+        # Check boundaries if provided (relative to trajectory start)
+        is_valid = True
+        trimmed_index = None
+        if phantom_boundaries is not None:
+            self.logger.info(f"Checking trajectory boundaries (relative to start position)...")
+            
+            for i, pos in enumerate(positions_tf):
+                if not (phantom_boundaries['x'][0] <= pos[0] <= phantom_boundaries['x'][1] and
+                        phantom_boundaries['y'][0] <= pos[1] <= phantom_boundaries['y'][1] and
+                        phantom_boundaries['z'][0] <= pos[2] <= phantom_boundaries['z'][1]):
+                    is_valid = False
+                    trimmed_index = i
+                    self.logger.warning(f"  ⚠ Trajectory out of boundaries at step {i}/{len(positions_tf)}. "
+                                       f"pos:{pos}, phantom_boundaries:{phantom_boundaries}")
+                    break
+            
+            # Handle invalid trajectories
+            if not is_valid:
+                if trimmed_index is not None and trimmed_index / len(positions_tf) >= 0.5:
+                    # Trim trajectory if more than 50% is valid
+                    self.logger.info(f"  ✓ Trimming trajectory to {trimmed_index} steps (>50% valid)")
+                    positions_tf = positions_tf[:trimmed_index]
+                    orientations_tf = orientations_tf[:trimmed_index]
+                else:
+                    # More than 50% is out of bounds, reject the trajectory
+                    self.logger.error(f"  ✗ Trajectory invalid: less than 50% waypoints within boundaries. "
+                                     f"Aborting transformation: {trimmed_index}/{len(positions_tf)}")
+                    return None
+        
+        # Convert to joint space using IK
+        # Note: ee_rotation is now applied directly to orientations in apply_transformation
+        # so we don't need to apply it again here
+        self.logger.info(f"min z: {np.min(positions_tf[:,2])}, max z: {np.max(positions_tf[:,2])} "
+                        f"z boundaries: {phantom_boundaries['z'] if phantom_boundaries else 'N/A'}")
+        
+        if q_init is None:
+            q_init = self.panda.q
+            
+      
+        q_transformed = q_init
+        if len(q_transformed) == 0:
+            self.logger.error("✗ No valid IK solutions found for transformed trajectory. Aborting transformation.")
+            return None
+        
+      
+        q_downsampled = q_transformed
+      
+        
+        # Create result dictionary
+        result = {
+            'q_transformed_full': q_transformed,
+            'q_waypoints': q_downsampled,
+            'valid_indices': 0,
+            'positions_original': positions,
+            'orientations_original': orientations,
+            'positions_transformed': positions_tf,
+            'orientations_transformed': orientations_tf,
+            'translation': translation,
+            'rotation_matrix': rotation_matrix if rotation_matrix is not None else np.eye(3),
+            'primitive_name': primitive_name,
+        }
         
         return result
     
@@ -502,5 +881,221 @@ class TrajectoryTransformer:
             output_path: Path to save the transformed trajectory
         """
         np.save(output_path, result)
-        if self.verbose:
-            print(f"✓ Saved transformed trajectory to {output_path}")
+        self.logger.info(f"✓ Saved transformed trajectory to {output_path}")
+    
+    def execute_trajectory_with_logging(
+        self,
+        panda,
+        writer,
+        q_waypoints: np.ndarray,
+        # q_start: Optional[np.ndarray] = None,
+        speed_factor: float = 0.1,
+        positions_transformed=None,
+        orientations_transformed=None
+    ) -> bool:
+        """
+        Execute transformed trajectory and log data to HDF5.
+        
+        Uses panda.enable_logging() during execution, then processes the log
+        and bulk-adds the data to HDF5 after completion.
+        
+        Args:
+            panda: Panda robot instance
+            writer: HDF5Writer instance
+            q_waypoints: Joint waypoints to execute [n_waypoints, 7]
+            q_start: Starting joint position (if None, uses current position)
+            speed_factor: Speed factor for trajectory execution (0.0-1.0)
+            
+        Returns:
+            Boolean indicating success
+        """
+        self.logger.info("="*60)
+        self.logger.info("TRAJECTORY EXECUTION WITH LOGGING")
+        self.logger.info("="*60)
+        
+        try:
+            # # Move to start position if provided
+            # if q_start is not None:
+            #     if self.verbose:
+            #         print("Moving to start position...")
+            #     panda.move_to_joint_position(q_start, dq_threshold=0.001)
+            
+            # Estimate number of samples based on trajectory length and speed
+            # Rough estimate: panda logs at 1000Hz, trajectory execution time depends on waypoints and speed\
+            #TODO : improve estimate based on actual trajectory time
+            num_samples = 8 * 1000  # Conservative estimate
+            #move to the first waypoint without logging
+            # target_pose = panda_py.fk(q_waypoints[0])
+            
+            # Convert rotation matrices to quaternions (move_to_pose expects quaternions [4,])
+            orientations_quat = np.array([R.from_matrix(rot).as_quat() for rot in orientations_transformed])
+            # self.logger.debug(f'positions_transformed shape: {positions_transformed.shape}, orientations_quat shape: {orientations_quat.shape}')
+            cur_pos = panda.get_position()
+            print(f"start position: {cur_pos}")
+            print(f'last z:{positions_transformed[-1,2]}, first z:{positions_transformed[0,2]}')
+            panda.move_to_pose(
+                positions_transformed[0],
+                orientations_quat[0],
+                speed_factor=speed_factor
+            )
+            # self.panda.move_to_pose(target_pose, speed_factor=speed_factor)
+            # panda.move_to_joint_position(q_waypoints[0],speed_factor=speed_factor)
+            self.logger.info("Enabling data logging...")
+            panda.enable_logging(num_samples)
+            
+            # Enable writing for xela and camera data during execution
+            writer.start_writing()
+            
+            # Execute transformed trajectory
+            # self.logger.info(f"Executing trajectory with {len(q_waypoints)} waypoints...")
+            print(f'move_to_joint_position')
+            t0 = time.time()
+            # success = panda.move_to_joint_position(
+            #     q_waypoints.tolist(),
+            #     speed_factor=speed_factor
+            # )
+            panda.move_to_pose(
+                positions_transformed,
+                orientations_quat,
+                speed_factor=speed_factor
+            )
+            
+            # Stop writing
+            writer.stop_writing()
+            self.logger.info(f"Trajectory execution time: {time.time() - t0:.2f}s")
+            
+            
+            # Get logged data
+            self.logger.info("Retrieving logged data...")
+            log = panda.get_log()
+            
+            # self.logger.debug(f"Log keys: {log.keys()}")
+            self.logger.debug(f"Number of samples: {len(log['q'])}")
+            
+            # # Return to start position if provided
+            # if q_start is not None:
+            #     if self.verbose:
+            #         print("Returning to start position...")
+            #     panda.move_to_joint_position(q_start.tolist())
+            
+            # Process logged data and bulk-add to HDF5
+            self.logger.info("\nProcessing logged data to calculate forces...")
+            
+            self._bulk_add_logged_data(panda, writer, log)
+            
+            self.logger.info("="*60)
+            # panda.move_to_joint_position(
+            #     q_waypoints[0],
+            #     speed_factor=speed_factor
+            # )
+            panda.move_to_pose(
+                positions_transformed[0],
+                orientations_quat[0],
+                speed_factor=speed_factor
+            )
+            cur_pos = panda.get_position()
+            print(f"Returned to start position: {cur_pos}")
+            
+        except Exception as e:
+            self.logger.error(f"✗ Execution failed: {e}")
+            writer.stop_writing()
+            writer.clear_data()
+            writer.to_file_enabled = False
+            return False
+    
+    def _bulk_add_logged_data(self, panda, writer, log: dict):
+        """
+        Process panda log data and bulk-add to HDF5 writer.
+        
+        Args:
+            panda: Panda robot instance (for model)
+            writer: HDF5Writer instance
+            log: Log dictionary from panda.get_log()
+        """
+        self.logger.info("Calculating forces from logged data...")
+        t0 = time.time()
+        # Get arrays from log
+        q_log = np.array(log['q'])[::10]
+        dq_log = np.array(log['dq'])[::10]
+        tau_J_log = np.array(log['tau_J'])[::10]
+        O_T_EE_log = np.array(log['O_T_EE'])[::10]
+        F_T_EE_log = np.array(log['F_T_EE'])[::10]
+        EE_T_K_log = np.array(log['EE_T_K'])[::10]
+        m_total_log = np.array(log['m_total'])[::10]
+        F_x_Ctotal_log = np.array(log['F_x_Ctotal'])[::10]
+        I_total_log = np.array(log['I_total'])[::10]
+        # m_total_log = log.get('m_total')
+        # F_x_Ctotal_log = log.get('F_x_Ctotal')
+        # I_total_log = log.get('I_total')
+      
+        # print(f'loaded log data: q_log.shape={q_log.shape}, dq_log.shape={dq_log.shape}, tau_J_log.shape={tau_J_log.shape}, O_T_EE_log.shape={O_T_EE_log.shape}, F_T_EE_log.shape={F_T_EE_log.shape}, EE_T_K_log.shape={EE_T_K_log.shape}')
+        n_samples = len(q_log)
+        
+        # Get model once (constant during execution)
+        p_model = panda.get_model()
+        
+        # Calculate forces for all samples
+        calculated_forces = []
+        
+        self.logger.info(f"Calculating forces for {n_samples} samples... dt:{time.time()-t0:.2f}s")
+        start_time = time.time()
+        try:
+            for i in range(n_samples):
+                # Create a minimal state object for calc_force
+                # class State:
+                #     def __init__(self, q, dq, tau_J):
+                #         self.q = q
+                #         self.dq = dq
+                #         self.tau_J = tau_J
+                
+                # state = State(q_log[i], dq_log[i], tau_J_log[i])
+                
+                # Calculate Jacobian
+                jacobian = np.array(
+                    p_model.zero_jacobian(panda_py.libfranka.Frame.kEndEffector, q_log[i],F_T_EE_log[i] ,EE_T_K_log[i])
+                ).reshape(6, 7, order='F')
+                
+                # Calculate force (same as in panda_sampler.calc_force)
+                tau_j = tau_J_log[i]
+                gravity = np.array(p_model.gravity(q_log[i],m_total_log[i], F_x_Ctotal_log[i]))
+                coriolis = np.array(p_model.coriolis(q_log[i], dq_log[i],I_total_log[i],m_total_log[i], F_x_Ctotal_log[i]))
+                tau = tau_j - gravity - coriolis
+                
+                calced_force, _, _, _ = scipy.linalg.lstsq(
+                    jacobian.T, tau, lapack_driver='gelsy'
+                )
+                calculated_forces.append(calced_force)
+                
+                # if (i + 1) % 100 == 0:
+                #     elapsed = time.time() - start_time
+                    # remaining = (elapsed / (i + 1)) * (n_samples - (i + 1))
+                    # self.logger.debug(f"  Progress: {i+1}/{n_samples} ({(i+1)/n_samples*100:.1f}%) - "
+                    #     f"Est. remaining: {remaining:.1f}s")
+        except Exception as e:
+            self.logger.error(f"✗ Force calculation failed: {e}")
+            return
+        elapsed = time.time() - start_time
+        self.logger.info(f"✓ Force calculation complete in {elapsed:.2f}s")
+        
+        # Generate timestamps (use indices as timestamps if not in log)
+        timestamps = log['time'][::10]
+        
+        
+        # Bulk add all data to writer
+        t1 = time.time()
+        self.logger.info(f"Bulk adding {n_samples} samples to HDF5...")
+        self.logger.debug(f"Sample of first timestamp: {timestamps[0]} shape: {np.array(timestamps).shape}")
+        for i in range(n_samples):
+            # Reshape O_T_EE to 4x4 matrix
+            my_pose_4 = O_T_EE_log[i].reshape(4, 4).T
+            
+            writer.add_robot_data(
+                q_log[i],
+                dq_log[i],
+                calculated_forces[i],
+                tau_J_log[i],
+                my_pose_4,
+                timestamps[i][0]/1e3
+            )
+        
+        self.logger.info(f"✓ Bulk add complete dt:{time.time()-t1:.2f}s")
