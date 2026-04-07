@@ -249,21 +249,17 @@ class TrajectoryTransformer:
         """
         Convert Cartesian trajectory to joint space using inverse kinematics.
         
-        Uses Hierarchical Quadratic Programming (HQP) based IK by default, which ensures
-        continuous joint trajectories by always seeding from the previous solution.
-        
-        The HQP solver:
+        Uses Hierarchical Quadratic Programming (HQP) based IK by default, which solves:
             min_{dq} 0.5 * ||dq||^2 + regularization
         Subject to:
             Primary Task: J(q) * dq = dx  (Cartesian trajectory tracking)
-            Height Constraint: z(q) + dz/dq * dq >= z_min  (floor avoidance)
-            Joint Limits: q_min <= q + dq <= q_max
+            Height Constraint: z(q) + dz/dq * dq * dt >= z_min  (linearized floor avoidance)
+            Joint Limits: q_min <= q + dq * dt <= q_max
         
         Args:
             positions: Array of 3D positions [n_waypoints, 3]
             orientations: Array of 3x3 rotation matrices [n_waypoints, 3, 3]
-            q_init: Initial joint configuration - REQUIRED for continuous trajectories.
-                    This is the starting configuration from which the trajectory begins.
+            q_init: Initial joint configuration for IK (uses first solution if None)
             ee_rotation_angle: Additional rotation to add to joint 7 (EE flange rotation)
             collect_failure_details: If True, collect detailed info about each IK failure
             use_hqp: If True (default), use HQP-based IK with height constraint.
@@ -277,7 +273,7 @@ class TrajectoryTransformer:
             
         If collect_failure_details is True, also sets self.ik_failure_details with list of dicts:
             - 'index': waypoint index
-            - 'reason': 'nan', 'joint_limits', 'hqp_failed', or 'exception'
+            - 'reason': 'nan', 'joint_0_limit', 'joint_limits', 'hqp_failed', or 'exception'
             - 'position': Cartesian position
             - 'details': Additional details (e.g., joint values, exception message)
         """
@@ -301,26 +297,23 @@ class TrajectoryTransformer:
         
         start_time = time.time()
         
-        # Get initial configuration - critical for continuous trajectories
-        if q_init is None:
-            # Try to get from first waypoint using analytical IK as seed
-            rot = R.from_matrix(orientations[0])
-            quat = rot.as_quat()
-            position_col = positions[0].reshape(3, 1)
-            orientation_quat = quat.reshape(4, 1)
-            q_seed = panda_py.ik(position_col, orientation_quat)
-            if np.any(np.isnan(q_seed)):
-                self.logger.warning("Could not find initial IK solution. Using default configuration.")
-                q_seed = np.array([0.0, -np.pi/4, 0.0, -3*np.pi/4, 0.0, np.pi/2, np.pi/4])
-            q_init = q_seed.flatten()
-        
-        # Current joint configuration - updated after each successful IK
-        q_current = q_init.copy()
-        
         for i in range(n_waypoints):
-            # Convert rotation matrix to quaternion (x, y, z, w format)
+            # Convert rotation matrix to quaternion (x, y, z, w format for panda_py.ik)
             rot = R.from_matrix(orientations[i])
             quat = rot.as_quat()  # Returns [x, y, z, w]
+            orientation_quat = quat.reshape(4, 1)  # Keep as [x, y, z, w] column vector [4, 1]
+            
+            # Prepare position as column vector [3, 1]
+            position_col = positions[i].reshape(3, 1)
+            
+            # Use previous solution as initial guess if available
+            if len(q_trajectory) > 0:
+                q_prev = q_trajectory[-1].reshape(7, 1)
+            elif q_init is not None:
+                q_prev = q_init.reshape(7, 1)
+            else:
+                # First call, use default
+                q_prev = panda_py.ik(position_col, orientation_quat)
             
             try:
                 q_flat = None
@@ -328,18 +321,17 @@ class TrajectoryTransformer:
                 
                 if use_hqp:
                     # Use HQP-based IK with height constraint
-                    # Always seed from the previous solution for continuity
                     hqp_result = panda_py.ik_hqp(
-                        positions[i],
-                        quat,
-                        q_current,
+                        position_col.flatten(),
+                        orientation_quat.flatten(),
+                        q_prev.flatten(),
                         z_min,
                         dt=0.001,
-                        max_iterations=100,
+                        max_iterations=50,
                         position_tolerance=1e-4,
                         orientation_tolerance=1e-3,
-                        damping=0.05,
-                        step_size=0.5
+                        damping=0.01,
+                        step_size=1.0
                     )
                     
                     if hqp_result.success:
@@ -347,30 +339,16 @@ class TrajectoryTransformer:
                         ik_success = True
                         hqp_used_count += 1
                     else:
-                        # For trajectory tracking, accept solutions that are close enough
-                        # This prevents gaps in the trajectory
-                        if hqp_result.position_error < 0.01 and hqp_result.orientation_error < 0.1:
-                            q_flat = np.array(hqp_result.q).flatten()
+                        # Fallback to standard IK if HQP fails
+                        if collect_failure_details:
+                            self.logger.debug(f"  HQP IK failed at waypoint {i}, trying standard IK")
+                        q = panda_py.ik(position_col, orientation_quat, q_prev, q_init[6] if q_init is not None else 0.785)
+                        q_flat = q.flatten()
+                        if not np.any(np.isnan(q_flat)):
                             ik_success = True
-                            hqp_used_count += 1
-                            if i < 3:
-                                self.logger.debug(f"  Waypoint {i}: Accepting relaxed solution "
-                                                f"(pos_err={hqp_result.position_error:.4f}, "
-                                                f"ori_err={hqp_result.orientation_error:.4f})")
-                        elif collect_failure_details:
-                            self.ik_failure_details.append({
-                                'index': i,
-                                'reason': 'hqp_failed',
-                                'position': positions[i].copy(),
-                                'details': f"pos_err={hqp_result.position_error:.4f}, "
-                                          f"ori_err={hqp_result.orientation_error:.4f}, "
-                                          f"iters={hqp_result.iterations}"
-                            })
                 else:
                     # Standard analytical IK
-                    position_col = positions[i].reshape(3, 1)
-                    orientation_quat = quat.reshape(4, 1)
-                    q = panda_py.ik(position_col, orientation_quat, q_current.reshape(7, 1), q_init[6])
+                    q = panda_py.ik(position_col, orientation_quat, q_prev, q_init[6] if q_init is not None else 0.785)
                     q_flat = q.flatten()
                     if not np.any(np.isnan(q_flat)):
                         ik_success = True
@@ -378,15 +356,16 @@ class TrajectoryTransformer:
                 # Check for NaN (IK failure)
                 if not ik_success or q_flat is None or np.any(np.isnan(q_flat)):
                     failed_count += 1
-                    if failed_count < 5:
-                        self.logger.debug(f"  Debug: Waypoint {i} IK failed")
-                        self.logger.debug(f"    Target position: {positions[i]}, z_min={z_min:.4f}")
-                    if collect_failure_details and use_hqp:
-                        pass  # Already added above
-                    elif collect_failure_details:
+                    if failed_count < 3:
+                        self.logger.debug(f"  Debug: Waypoint {i} IK returned NaN (no solution found)")
+                        self.logger.debug(f"    Transformed position: {positions[i]}")
+                        if debug_info and 'translation' in debug_info:
+                            self.logger.debug(f"    Translation applied: {debug_info['translation']}")
+                    if collect_failure_details:
+                        reason = 'hqp_failed' if use_hqp else 'nan'
                         self.ik_failure_details.append({
                             'index': i,
-                            'reason': 'nan',
+                            'reason': reason,
                             'position': positions[i].copy(),
                             'details': f"IK returned NaN - no solution found"
                         })
@@ -400,17 +379,13 @@ class TrajectoryTransformer:
                 if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
                     q_trajectory.append(q_flat)
                     valid_indices.append(i)
-                    # Update current configuration for next iteration (key for continuity!)
-                    q_current = q_flat.copy()
                 else:
                     failed_count += 1
                     violated_joints = []
                     for j in range(7):
                         if q_flat[j] < self.joint_limits_lower[j] or q_flat[j] > self.joint_limits_upper[j]:
-                            violated_joints.append(f"J{j}: {np.degrees(q_flat[j]):.2f}° "
-                                                  f"(limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, "
-                                                  f"{np.degrees(self.joint_limits_upper[j]):.2f}°])")
-                    if failed_count < 5:
+                            violated_joints.append(f"J{j}: {np.degrees(q_flat[j]):.2f}° (limits: [{np.degrees(self.joint_limits_lower[j]):.2f}°, {np.degrees(self.joint_limits_upper[j]):.2f}°])")
+                    if failed_count < 3:  # Log first few failures for debugging
                         self.logger.debug(f"  Debug: Waypoint {i} failed joint limits check")
                         for vj in violated_joints:
                             self.logger.debug(f"    {vj}")
@@ -424,7 +399,7 @@ class TrajectoryTransformer:
                         })
             except Exception as e:
                 failed_count += 1
-                if failed_count < 5:
+                if failed_count < 3:  # Log first few exceptions for debugging
                     self.logger.debug(f"  Debug: Waypoint {i} IK exception: {type(e).__name__}: {e}")
                 if collect_failure_details:
                     self.ik_failure_details.append({
@@ -442,266 +417,7 @@ class TrajectoryTransformer:
             self.logger.info(f"  HQP IK used: {hqp_used_count}/{n_waypoints}")
         if failed_count > 0:
             self.logger.warning(f"  ⚠ Failed waypoints: {failed_count} (outside joint limits or no solution)")
-
-        # Interpolate to fill in gaps left by failed IK waypoints
-        if len(q_trajectory) > 1 and len(valid_indices) < n_waypoints:
-            q_full = np.empty((n_waypoints, 7))
-            q_arr = np.array(q_trajectory)
-            vi = np.array(valid_indices)
-            for j in range(7):
-                q_full[:, j] = np.interp(
-                    np.arange(n_waypoints), vi, q_arr[:, j])
-            interp_count = n_waypoints - len(valid_indices)
-            self.logger.info(f"  Interpolated {interp_count} failed waypoints in joint space")
-            return q_full, list(range(n_waypoints))
-
-        return np.array(q_trajectory), valid_indices
-
-    def cartesian_to_joints_pink(
-        self,
-        positions: np.ndarray,
-        orientations: np.ndarray,
-        q_init: Optional[np.ndarray] = None,
-        collect_failure_details: bool = False,
-        pink_kwargs: Optional[dict] = None,
-    ) -> Tuple[np.ndarray, List[int]]:
-        """
-        Alternate IK pipeline that uses the external `pink` solver if available.
-
-        This function attempts to import `pink` and detect a sensible IK entry
-        point such as `inverse_kinematics`, `ik_solve` or `solve`. It will
-        iterate over waypoints, seeding the solver with the previous solution
-        to encourage continuity. If `pink` is not available or does not expose
-        a known API, an ImportError is raised.
-
-        The return values mirror `cartesian_to_joints`: (q_trajectory, valid_indices).
-        If some waypoints fail, the function will interpolate joint-space values
-        across the missing indices to provide a full-length trajectory (same
-        behaviour as `cartesian_to_joints`).
-        """
-        try:
-            import pink
-        except Exception as e:  # pragma: no cover - pink may not be installed in test env
-            raise ImportError("pink module is required for cartesian_to_joints_pink") from e
-
-        solver = None
-        # Prefer high-level convenience API if present
-        if hasattr(pink, 'solve_ik'):
-            solver = getattr(pink, 'solve_ik')
-            solver_name = 'solve_ik'
-        else:
-            # Try common solver function names used by different pink versions
-            solver_name = None
-            for name in ('inverse_kinematics', 'ik_solve', 'solve', 'ik'):
-                if hasattr(pink, name):
-                    solver = getattr(pink, name)
-                    solver_name = name
-                    break
-
-        if solver is None:
-            raise ImportError("Could not find a compatible IK solver in 'pink' (tried solve_ik, inverse_kinematics, ik_solve, solve, ik)")
-
-        # Robot loader (only load if needed)
-        robot = None
-        load_robot_description = None
-        try:
-            from robot_descriptions.loaders.pinocchio import load_robot_description
-            load_robot_description = load_robot_description
-        except Exception:
-            load_robot_description = None
-
-        n_waypoints = len(positions)
-        q_trajectory = []
-        valid_indices = []
-        failed_count = 0
-
-        if collect_failure_details:
-            self.ik_failure_details = []
-
-        pink_kwargs = pink_kwargs or {}
-
-        # Seed initial configuration
-        if q_init is None:
-            # Try to get initial from panda if present
-            q_init = getattr(self.panda, 'q', None)
-        if q_init is None:
-            q_init = np.array([0.0, -np.pi/4, 0.0, -3*np.pi/4, 0.0, np.pi/2, np.pi/4])
-
-        q_current = q_init.copy()
-
-        # If we can load a pinocchio robot description and pink exposes Configuration
-        # and FrameTask/PostureTask, prefer constructing tasks and calling pink.solve_ik
-        use_task_api = False
-        try:
-            if load_robot_description is not None and hasattr(pink, 'Configuration') and hasattr(pink, 'FrameTask'):
-                # Attempt to load robot and verify Configuration works
-                try:
-                    robot = load_robot_description('panda_description')
-                    # Choose a sensible end-effector frame
-                    ee_frame = 'panda_hand_tcp' if 'panda_hand_tcp' in [f.name for f in robot.model.frames] else 'panda_link8'
-                    use_task_api = True
-                except Exception:
-                    robot = None
-                    use_task_api = False
-        except Exception:
-            robot = None
-            use_task_api = False
-
-        for i in range(n_waypoints):
-            rot = R.from_matrix(orientations[i])
-            quat = rot.as_quat()  # [x, y, z, w]
-
-            try:
-                q_flat = None
-
-                if use_task_api and robot is not None:
-                    # Build a pink.Configuration from the robot model/data and current q
-                    try:
-                        # pink expects a full configuration vector matching model.nq
-                        q_cfg = np.array(robot.q0).copy() if hasattr(robot, 'q0') else np.zeros(robot.model.nq)
-                        q_cfg[:len(q_current)] = q_current.copy()
-                        configuration = pink.Configuration(robot.model, robot.data, q_cfg)
-
-                        # FrameTask expects frame name and costs (position_cost, orientation_cost)
-                        frame_task = pink.FrameTask(ee_frame, position_cost=1.0, orientation_cost=1.0)
-                        # Small posture cost to regularize solutions
-                        posture = pink.PostureTask(cost=0.01)
-
-                        tasks = [frame_task, posture]
-
-                        # Call solve_ik with a small dt and qpoases solver if available
-                        try:
-                            q_sol = pink.solve_ik(configuration, tasks, 0.01, solver='qpoases', damping=0.05)
-                            if q_sol is not None:
-                                q_arr = np.array(q_sol).flatten()
-                                # Extract the first 7 joints (arm) from the full solution
-                                q_flat = q_arr[:7]
-                        except Exception as e:
-                            # If task-based solve fails, fall back to heuristic calls below
-                            q_flat = None
-                            if collect_failure_details:
-                                self.ik_failure_details.append({
-                                    'index': i,
-                                    'reason': 'pink_task_error',
-                                    'position': positions[i].copy(),
-                                    'details': f"{type(e).__name__}: {e}"
-                                })
-                    except Exception as e:
-                        # Failed to construct Configuration or tasks
-                        q_flat = None
-                        if collect_failure_details:
-                            self.ik_failure_details.append({
-                                'index': i,
-                                'reason': 'pink_config_error',
-                                'position': positions[i].copy(),
-                                'details': f"{type(e).__name__}: {e}"
-                            })
-
-                # Fallback: try convenience solver signatures (older pink variants)
-                if q_flat is None:
-                    tried = []
-                    res = None
-
-                    # 1) solver(position, quaternion, seed=..., **kwargs)
-                    try:
-                        tried.append('pos,quat,seed')
-                        res = solver(positions[i], quat, seed=q_current, **pink_kwargs)
-                    except TypeError:
-                        res = None
-
-                    # 2) solver(position, quaternion, q_seed, **kwargs)
-                    if res is None:
-                        try:
-                            tried.append('pos,quat,q_seed')
-                            res = solver(positions[i], quat, q_current, **pink_kwargs)
-                        except TypeError:
-                            res = None
-
-                    # 3) solver that includes robot/model
-                    if res is None and robot is not None:
-                        try:
-                            tried.append('robot,pos,quat,seed')
-                            res = solver(robot, positions[i], quat, q_current, **pink_kwargs)
-                        except Exception:
-                            res = None
-
-                    # 4) solver(pos, quat)
-                    if res is None:
-                        try:
-                            tried.append('pos,quat')
-                            res = solver(positions[i], quat)
-                        except TypeError:
-                            res = None
-
-                    if res is None:
-                        # If nothing worked, record failure
-                        if collect_failure_details:
-                            self.ik_failure_details.append({
-                                'index': i,
-                                'reason': 'pink_signature_mismatch',
-                                'position': positions[i].copy(),
-                                'details': f"Tried signatures: {tried}"
-                            })
-                        failed_count += 1
-                        continue
-
-                    # Handle possible return types
-                    if isinstance(res, dict):
-                        if not res.get('success', True):
-                            q_flat = None
-                        else:
-                            q_flat = np.array(res.get('q') or res.get('solution'))
-                    elif isinstance(res, (list, tuple, np.ndarray)):
-                        q_flat = np.array(res).flatten()
-                    else:
-                        q_flat = None
-
-                if q_flat is None or np.any(np.isnan(q_flat)):
-                    failed_count += 1
-                    if collect_failure_details and q_flat is not None:
-                        self.ik_failure_details.append({
-                            'index': i,
-                            'reason': 'pink_failed',
-                            'position': positions[i].copy(),
-                            'details': f'return={type(q_flat).__name__}'
-                        })
-                    continue
-
-                # Check joint limits
-                if np.all(q_flat >= self.joint_limits_lower) and np.all(q_flat <= self.joint_limits_upper):
-                    q_trajectory.append(q_flat)
-                    valid_indices.append(i)
-                    q_current = q_flat.copy()
-                else:
-                    failed_count += 1
-                    if collect_failure_details:
-                        self.ik_failure_details.append({
-                            'index': i,
-                            'reason': 'joint_limits',
-                            'position': positions[i].copy(),
-                            'q_solution': q_flat.copy()
-                        })
-            except Exception as e:
-                failed_count += 1
-                if collect_failure_details:
-                    self.ik_failure_details.append({
-                        'index': i,
-                        'reason': 'exception',
-                        'position': positions[i].copy(),
-                        'details': f"{type(e).__name__}: {e}"
-                    })
-
-        # If we have some valid points but not all, interpolate missing waypoints in joint space
-        if len(q_trajectory) > 1 and len(valid_indices) < n_waypoints:
-            q_full = np.empty((n_waypoints, 7))
-            q_arr = np.array(q_trajectory)
-            vi = np.array(valid_indices)
-            for j in range(7):
-                q_full[:, j] = np.interp(np.arange(n_waypoints), vi, q_arr[:, j])
-            interp_count = n_waypoints - len(valid_indices)
-            self.logger.info(f"  Interpolated {interp_count} failed waypoints (pink) in joint space")
-            return q_full, list(range(n_waypoints))
-
+        
         return np.array(q_trajectory), valid_indices
     
     def downsample_trajectory(

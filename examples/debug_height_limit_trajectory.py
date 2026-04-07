@@ -45,7 +45,7 @@ TILT_DEG   = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 ROT_DEG    = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 NPY_PATH   = sys.argv[4] if len(sys.argv) > 4 else None
 
-HEIGHT_LIMIT   = DEFAULT_HEIGHT_LIMIT
+HEIGHT_LIMIT   = 0.174#DEFAULT_HEIGHT_LIMIT
 SPEED_FACTOR   = DEFAULT_SPEED_FACTOR
 MAX_DEVIATION  = DEFAULT_MAX_DEVIATION
 

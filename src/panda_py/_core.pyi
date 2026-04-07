@@ -2,8 +2,20 @@ from __future__ import annotations
 import numpy
 import panda_py.libfranka
 import typing
-__all__ = ['AppliedForce', 'AppliedTorque', 'CartesianImpedance', 'CartesianTrajectory', 'Force', 'HeightConstrainedJointTrajectory', 'IntegratedVelocity', 'JointPosition', 'JointTrajectory', 'Panda', 'PandaContext', 'TorqueController', 'fk', 'ik', 'ik_full']
+__all__ = ['AppliedForce', 'AppliedTorque', 'CartesianImpedance', 'CartesianTrajectory', 'Force', 'HeightConstrainedJointTrajectory', 'IKHQPResult', 'IntegratedVelocity', 'JointPosition', 'JointTrajectory', 'Panda', 'PandaContext', 'TorqueController', 'fk', 'ik', 'ik_full', 'ik_hqp']
 M = typing.TypeVar("M", bound=int)
+
+class IKHQPResult:
+    """
+    Result of HQP-based inverse kinematics computation.
+    """
+    q: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]]
+    success: bool
+    iterations: int
+    position_error: float
+    orientation_error: float
+    height_margin: float
+
 class AppliedForce(TorqueController):
     def __init__(self, damping: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., filter_coeff: float = 1.0) -> None:
         ...
@@ -112,9 +124,9 @@ class HeightConstrainedJointTrajectory(JointTrajectory):
     """
     A joint trajectory that enforces a minimum end-effector height.
     Wraps an existing JointTrajectory and corrects violating samples via FK/IK.
-    Velocities and accelerations are computed via finite differences.
+    Re-plans through corrected waypoints for smooth velocities and accelerations.
     """
-    def __init__(self, base_trajectory: JointTrajectory, height_limit: float, dt: float = 0.001) -> None:
+    def __init__(self, base_trajectory: JointTrajectory, height_limit: float, dt: float = 0.001, max_deviation: float = 0.001, speed_factor: float = 0.2, timeout: float = 30.0, max_waypoints: int = 2000) -> None:
         ...
     def get_duration(self) -> float:
         ...
@@ -312,6 +324,38 @@ def ik_full(O_T_EE: numpy.ndarray[tuple[typing.Literal[4], typing.Literal[4]], n
 @typing.overload
 def ik_full(position: numpy.ndarray[tuple[typing.Literal[3], typing.Literal[1]], numpy.dtype[numpy.float64]], orientation: numpy.ndarray[tuple[typing.Literal[4], typing.Literal[1]], numpy.dtype[numpy.float64]], q_init: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]] = ..., q_7: float = 0.7853981633974483) -> numpy.ndarray[tuple[typing.Literal[4], typing.Literal[7]], numpy.dtype[numpy.float64]]:
     ...
+@typing.overload
+def ik_hqp(O_T_EE: numpy.ndarray[tuple[typing.Literal[4], typing.Literal[4]], numpy.dtype[numpy.float64]], q_init: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], z_min: float, dt: float = 0.001, max_iterations: int = 50, position_tolerance: float = 1e-4, orientation_tolerance: float = 1e-3, damping: float = 0.01, step_size: float = 1.0) -> IKHQPResult:
+    """
+              Compute inverse kinematics using Hierarchical Quadratic Programming (HQP).
+              
+              Solves:
+                min_{dq} 0.5 * ||dq||^2 + regularization
+              Subject to:
+                Primary Task: J(q) * dq = dx  (Cartesian trajectory tracking)
+                Height Constraint: z(q) + dz/dq * dq >= z_min  (linearized floor avoidance)
+                Joint Limits: q_min <= q + dq <= q_max
+              
+              Args:
+                O_T_EE: Homogeneous transform (4x4) describing target end-effector pose.
+                q_init: Initial joint configuration to seed the optimization.
+                z_min: Minimum allowed end-effector height (floor constraint).
+                dt: Time step for constraint linearization (default: 0.001).
+                max_iterations: Maximum optimization iterations (default: 50).
+                position_tolerance: Position convergence tolerance in meters (default: 1e-4).
+                orientation_tolerance: Orientation convergence tolerance in radians (default: 1e-3).
+                damping: Damping factor for least-squares (default: 0.01).
+                step_size: Step size scaling factor (default: 1.0).
+                
+              Returns:
+                IKHQPResult with fields: q (joint positions), success (bool), 
+                iterations (int), position_error (double), orientation_error (double).
+    """
+@typing.overload
+def ik_hqp(position: numpy.ndarray[tuple[typing.Literal[3], typing.Literal[1]], numpy.dtype[numpy.float64]], orientation: numpy.ndarray[tuple[typing.Literal[4], typing.Literal[1]], numpy.dtype[numpy.float64]], q_init: numpy.ndarray[tuple[typing.Literal[7], typing.Literal[1]], numpy.dtype[numpy.float64]], z_min: float, dt: float = 0.001, max_iterations: int = 50, position_tolerance: float = 1e-4, orientation_tolerance: float = 1e-3, damping: float = 0.01, step_size: float = 1.0) -> IKHQPResult:
+    """
+              Same as :py:func:`ik_hqp` above, but takes position and orientation arguments.
+    """
 _DTAU_J_MAX: numpy.ndarray  # value = array([1000., 1000., 1000., 1000., 1000., 1000., 1000.])
 _JOINT_LIMITS_LOWER: numpy.ndarray  # value = array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 _JOINT_LIMITS_UPPER: numpy.ndarray  # value = array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973])

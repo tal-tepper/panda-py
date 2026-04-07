@@ -29,7 +29,7 @@ from ._core import Panda, PandaContext, fk, ik, ik_full
 
 __all__ = [
     'Panda', 'PandaContext', 'constants', 'controllers', 'libfranka', 'motion',
-    'fk', 'ik', 'ik_full', 'Desk', 'TOKEN_PATH'
+    'fk', 'ik', 'ik_full', 'ik_hqp', 'IKHQPResult', 'Desk', 'TOKEN_PATH'
 ]
 
 __version__ = '0.8.1'

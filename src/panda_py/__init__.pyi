@@ -26,13 +26,13 @@ import requests as requests
 import urllib3 as urllib3
 from websockets.sync.client import connect
 
-from panda_py._core import Panda, PandaContext, fk, ik, ik_full
+from panda_py._core import Panda, PandaContext, fk, ik, ik_full, ik_hqp, IKHQPResult
 
 from . import _core, libfranka
 
 __all__: list = [
     'Panda', 'PandaContext', 'constants', 'controllers', 'libfranka', 'motion',
-    'fk', 'ik', 'ik_full', 'Desk', 'TOKEN_PATH'
+    'fk', 'ik', 'ik_full', 'ik_hqp', 'IKHQPResult', 'Desk', 'TOKEN_PATH'
 ]
 
 

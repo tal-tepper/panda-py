@@ -340,7 +340,7 @@ bool Panda::moveToJointPosition(std::vector<Vector7d> &waypoints,
   waypoints.push_back(getJointPositions());
   std::rotate(waypoints.rbegin(), waypoints.rbegin() + 1, waypoints.rend());
   auto traj =
-      std::make_shared<motion::JointTrajectory>(waypoints, speed_factor, 0.02);
+      std::make_shared<motion::JointTrajectory>(waypoints, speed_factor, 0.002);
   if (traj->getDuration() == 0.0) {
     _log("info", "Already at goal.");
     return true;
@@ -434,7 +434,7 @@ bool Panda::moveToJointPositionWithHeightLimit(
     _log("warning",
          "Height violation detected. Computing corrected trajectory.");
     traj = std::make_shared<motion::HeightConstrainedJointTrajectory>(
-        base_traj, height_limit, 0.001);
+        base_traj, height_limit, 0.001, 0.001, speed_factor);
   }
 
   auto ctrl = std::make_shared<controllers::JointTrajectory>(
@@ -512,7 +512,7 @@ Panda::computeTrajectoryWithHeightLimit(
 
   _log("warning", "Height violation detected. Computing corrected trajectory.");
   return std::make_shared<motion::HeightConstrainedJointTrajectory>(
-      base_traj, height_limit, 0.001);
+      base_traj, height_limit, 0.001, 0.001, speed_factor);
 }
 
 bool Panda::moveToPose(const Eigen::Vector3d &position,
@@ -598,6 +598,35 @@ bool Panda::moveToStart(double speed_factor, const Vector7d &stiffness,
                         double success_threshold) {
   return moveToJointPosition(kJointPositionStart, speed_factor, stiffness,
                              damping, dq_threshold, success_threshold);
+}
+
+std::vector<Vector7d> Panda::getJointTrajectory(
+    const Vector7d &position, double speed_factor, double dt,
+    double max_deviation) {
+  std::vector<Vector7d> waypoints;
+  waypoints.push_back(position);
+  return getJointTrajectory(waypoints, speed_factor, dt, max_deviation);
+}
+
+std::vector<Vector7d> Panda::getJointTrajectory(
+    std::vector<Vector7d> &waypoints, double speed_factor, double dt,
+    double max_deviation) {
+  _setState(robot_->readOnce());
+  // waypoints.push_back(getJointPositions());
+  // std::rotate(waypoints.rbegin(), waypoints.rbegin() + 1, waypoints.rend());
+  auto traj = std::make_shared<motion::JointTrajectory>(waypoints, speed_factor, max_deviation);
+  
+  // Sample the trajectory at dt intervals
+  std::vector<Vector7d> positions;
+  double duration = traj->getDuration();
+  for (double t = 0.0; t <= duration; t += dt) {
+    positions.push_back(traj->getJointPositions(t));
+  }
+  // Always include the final position
+  if (positions.empty() || (duration - (positions.size() - 1) * dt) > 1e-6) {
+    positions.push_back(traj->getJointPositions(duration));
+  }
+  return positions;
 }
 
 void Panda::update_robot_state() {

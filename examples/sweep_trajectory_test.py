@@ -59,8 +59,32 @@ print(f"Loaded: {npy_path}")
 print(f"Primitives available: {list(raw_data.keys())}")
 print(f"Tilt angles:    {TILT_ANGLES_DEG}°")
 print(f"Rotation angles: {ROTATION_ANGLES_DEG}°")
+
+# -----------------------------------------------------------------------------
+# Compute min height after IK for all primitives (for use as height limit)
+# -----------------------------------------------------------------------------
+print("\nComputing minimum height after IK for all primitives...")
+min_heights = []
+for prim_name in PRIMITIVES:
+    if prim_name not in raw_data:
+        continue
+    q_full = np.array(raw_data[prim_name]['q'])
+    # Use default tilt/rot (0,0) for min height check
+    result = test_combination(make_transformer(), q_full, 0, 0)
+    if result.get('q_transformed') is not None:
+        from trajectory_test_utils import _compute_heights
+        h = _compute_heights(result['q_transformed'])
+        min_heights.append(h.min())
+if min_heights:
+    HEIGHT_LIMIT = min(min_heights) - 0.001  # Add small margin
+    print(f"  New height limit (min after IK): {HEIGHT_LIMIT*100:.1f} cm")
+else:
+    print("  Could not compute min height, using default.")
+
 print(f"Height limit:   {HEIGHT_LIMIT*100:.0f} cm")
 print(f"Max deviation:  {MAX_DEVIATION}")
+
+
 
 # Set up transformer
 transformer = make_transformer()

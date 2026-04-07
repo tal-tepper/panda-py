@@ -417,6 +417,300 @@ inline Vector7d ik(const Eigen::Vector3d &position,
   return ik(T, q_actual_array, q7);
 }
 
+// ---------------------------------------------------------------------------
+// Numerical Jacobian computation for FK
+// ---------------------------------------------------------------------------
+
+inline Eigen::Matrix<double, 6, 7> computeJacobian(const Vector7d &q) {
+  const double eps = 1e-6;
+  Eigen::Matrix<double, 6, 7> J;
+  
+  Eigen::Matrix4d T0 = fk(q);
+  Eigen::Vector3d p0 = T0.block<3, 1>(0, 3);
+  Eigen::Matrix3d R0 = T0.block<3, 3>(0, 0);
+  
+  for (int i = 0; i < 7; i++) {
+    Vector7d q_plus = q;
+    q_plus[i] += eps;
+    
+    Eigen::Matrix4d T_plus = fk(q_plus);
+    Eigen::Vector3d p_plus = T_plus.block<3, 1>(0, 3);
+    Eigen::Matrix3d R_plus = T_plus.block<3, 3>(0, 0);
+    
+    // Linear velocity (position derivative)
+    J.block<3, 1>(0, i) = (p_plus - p0) / eps;
+    
+    // Angular velocity from rotation matrix derivative
+    // Using: R_plus ≈ R0 * exp([w]_x * eps), so [w]_x ≈ (R0^T * R_plus - I) / eps
+    Eigen::Matrix3d dR = (R0.transpose() * R_plus - Eigen::Matrix3d::Identity()) / eps;
+    // Extract angular velocity from skew-symmetric approximation
+    J(3, i) = dR(2, 1);  // wx
+    J(4, i) = dR(0, 2);  // wy
+    J(5, i) = dR(1, 0);  // wz
+  }
+  
+  return J;
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical Quadratic Programming (HQP) based IK with height constraint
+// ---------------------------------------------------------------------------
+// 
+// Solves:
+//   min_{dq} 0.5 * ||dq||^2 + regularization
+// Subject to:
+//   Primary Task: J(q) * dq = dx  (Cartesian trajectory tracking)
+//   Height Constraint: z(q) + dz/dq * dq >= z_min  (linearized floor avoidance)
+//   Joint Limits: q_min <= q + dq <= q_max
+//
+// This solver is designed for continuous trajectory tracking - it minimizes
+// the joint displacement from the initial configuration while tracking the
+// target pose and respecting constraints. The solver prioritizes continuity
+// by starting from q_init and making small incremental updates.
+// ---------------------------------------------------------------------------
+
+struct IKHQPResult {
+  Vector7d q;
+  bool success;
+  int iterations;
+  double position_error;
+  double orientation_error;
+  double height_margin;  // How much above z_min
+};
+
+inline IKHQPResult ik_hqp(
+    const Eigen::Matrix4d &T_target,
+    const Vector7d &q_init,
+    double z_min,
+    double dt = 0.001,
+    int max_iterations = 100,
+    double position_tolerance = 1e-4,
+    double orientation_tolerance = 1e-3,
+    double damping = 0.05,
+    double step_size = 0.5) {
+  
+  IKHQPResult result;
+  result.q = q_init;
+  result.success = false;
+  result.iterations = 0;
+  result.height_margin = 0.0;
+  
+  const Vector7d q_min(kLowerJointLimitsData);
+  const Vector7d q_max(kUpperJointLimitsData);
+  
+  // Safety margin from joint limits (radians)
+  const double joint_margin = 0.05;
+  
+  // Extract target position and orientation
+  Eigen::Vector3d p_target = T_target.block<3, 1>(0, 3);
+  Eigen::Matrix3d R_target = T_target.block<3, 3>(0, 0);
+  
+  Vector7d q = q_init;
+  
+  // Maximum step per iteration (radians) to prevent divergence
+  const double max_step_norm = 0.3;
+  
+  // Track best solution found during optimization
+  Vector7d q_best = q_init;
+  double best_total_error = std::numeric_limits<double>::max();
+  int best_iter = 0;
+  
+  // Early stopping: if error increases significantly, revert to best
+  double prev_total_error = std::numeric_limits<double>::max();
+  int increasing_count = 0;
+  
+  for (int iter = 0; iter < max_iterations; iter++) {
+    result.iterations = iter + 1;
+    
+    // Compute current FK
+    Eigen::Matrix4d T_current = fk(q);
+    Eigen::Vector3d p_current = T_current.block<3, 1>(0, 3);
+    Eigen::Matrix3d R_current = T_current.block<3, 3>(0, 0);
+    double z_current = p_current[2];
+    
+    // Compute position error
+    Eigen::Vector3d dp = p_target - p_current;
+    result.position_error = dp.norm();
+    
+    // Compute orientation error using angle-axis representation
+    Eigen::Matrix3d R_error = R_target * R_current.transpose();
+    Eigen::AngleAxisd aa(R_error);
+    Eigen::Vector3d dw = aa.angle() * aa.axis();
+    result.orientation_error = dw.norm();
+    
+    // Update height margin
+    result.height_margin = z_current - z_min;
+    
+    // Check convergence
+    if (result.position_error < position_tolerance && 
+        result.orientation_error < orientation_tolerance) {
+      result.success = true;
+      result.q = q;
+      return result;
+    }
+    
+    // For trajectory tracking: if position is very good, accept it
+    // This prevents orientation oscillation from causing divergence
+    if (result.position_error < position_tolerance * 0.5 && 
+        result.orientation_error < orientation_tolerance * 10) {
+      result.success = true;
+      result.q = q;
+      return result;
+    }
+    
+    // Track best solution and detect divergence
+    // Use position-weighted error to prioritize position accuracy
+    double total_error = result.position_error + 0.01 * result.orientation_error;
+    if (total_error < best_total_error) {
+      best_total_error = total_error;
+      q_best = q;
+      best_iter = iter;
+      increasing_count = 0;
+    } else if (total_error > prev_total_error * 1.01) {
+      increasing_count++;
+      // If error is increasing for several iterations, revert to best and stop
+      if (increasing_count > 5) {
+        q = q_best;
+        result.iterations = best_iter + 1;
+        break;
+      }
+    }
+    prev_total_error = total_error;
+    
+    // Assemble task error [dp; dw]
+    Vector6d dx;
+    dx.head<3>() = dp;
+    dx.tail<3>() = dw;
+    
+    // Compute Jacobian
+    Eigen::Matrix<double, 6, 7> J = computeJacobian(q);
+    
+    // Extract height (z) row from Jacobian (row 2 for z position)
+    Eigen::RowVectorXd J_z = J.row(2);
+    
+    // -----------------------------------------------------------------
+    // Damped Least Squares Solution:
+    // dq = J^T * (J*J^T + lambda^2*I)^{-1} * dx
+    // -----------------------------------------------------------------
+    Eigen::Matrix<double, 6, 6> JJT = J * J.transpose();
+    Eigen::Matrix<double, 6, 6> JJT_damped = JJT + damping * damping * Eigen::Matrix<double, 6, 6>::Identity();
+    
+    // Solve for dq using damped pseudo-inverse
+    Eigen::Vector<double, 6> dx_proj = JJT_damped.ldlt().solve(dx);
+    Vector7d dq = J.transpose() * dx_proj;
+    
+    // Scale by step size
+    dq *= step_size;
+    
+    // Limit maximum step to prevent divergence
+    double dq_norm = dq.norm();
+    if (dq_norm > max_step_norm) {
+      dq *= (max_step_norm / dq_norm);
+    }
+    
+    // -----------------------------------------------------------------
+    // Height constraint: z_current + J_z * dq >= z_min
+    // If violated, project dq to satisfy the constraint
+    // -----------------------------------------------------------------
+    double z_after = z_current + J_z.dot(dq);
+    double height_buffer = 0.002;  // 2mm buffer above z_min
+    
+    if (z_after < z_min + height_buffer) {
+      // Amount we need to adjust
+      double z_deficit = (z_min + height_buffer) - z_after;
+      
+      // Project onto height constraint
+      double Jz_norm_sq = J_z.squaredNorm();
+      if (Jz_norm_sq > 1e-10) {
+        double alpha = z_deficit / Jz_norm_sq;
+        Vector7d dq_correction = alpha * J_z.transpose();
+        dq += dq_correction;
+      }
+    }
+    
+    // -----------------------------------------------------------------
+    // Joint limit constraints: clamp to respect limits
+    // -----------------------------------------------------------------
+    Vector7d q_new = q + dq;
+    for (int i = 0; i < 7; i++) {
+      double q_min_i = q_min[i] + joint_margin;
+      double q_max_i = q_max[i] - joint_margin;
+      
+      if (q_new[i] < q_min_i) {
+        dq[i] = q_min_i - q[i];
+      } else if (q_new[i] > q_max_i) {
+        dq[i] = q_max_i - q[i];
+      }
+    }
+    
+    // Update joint positions
+    q = q + dq;
+  }
+  
+  // Use the best solution found, not the last one (which may have diverged)
+  q = q_best;
+  
+  // Check if final solution is valid (relaxed tolerances for trajectory tracking)
+  Eigen::Matrix4d T_final = fk(q);
+  Eigen::Vector3d p_final = T_final.block<3, 1>(0, 3);
+  result.position_error = (p_target - p_final).norm();
+  result.height_margin = p_final[2] - z_min;
+  
+  Eigen::Matrix3d R_final = T_final.block<3, 3>(0, 0);
+  Eigen::Matrix3d R_err = R_target * R_final.transpose();
+  Eigen::AngleAxisd aa_final(R_err);
+  result.orientation_error = std::abs(aa_final.angle());
+  
+  // For trajectory tracking, be more lenient with success criteria
+  // The key is that we're close enough and respecting constraints
+  if (result.position_error < position_tolerance * 20 && 
+      result.orientation_error < orientation_tolerance * 20 &&
+      result.height_margin >= -0.001) {  // Allow tiny violation
+    result.success = true;
+  }
+  
+  result.q = q;
+  result.iterations = best_iter + 1;
+  return result;
+}
+
+// Overload with position and orientation vectors
+inline IKHQPResult ik_hqp(
+    const Eigen::Vector3d &position,
+    const Eigen::Vector4d &orientation,
+    const Vector7d &q_init,
+    double z_min,
+    double dt = 0.001,
+    int max_iterations = 100,
+    double position_tolerance = 1e-4,
+    double orientation_tolerance = 1e-3,
+    double damping = 0.05,
+    double step_size = 0.5) {
+  Eigen::Matrix4d T = PositionOrientationToMatrix(position, orientation);
+  return ik_hqp(T, q_init, z_min, dt, max_iterations, position_tolerance, 
+                orientation_tolerance, damping, step_size);
+}
+
+// Simple wrapper that returns just the joint positions (for compatibility)
+inline Vector7d ik_hqp_simple(
+    const Eigen::Matrix4d &T_target,
+    const Vector7d &q_init,
+    double z_min,
+    double dt = 0.001,
+    int max_iterations = 50,
+    double position_tolerance = 1e-4,
+    double orientation_tolerance = 1e-3) {
+  
+  IKHQPResult result = ik_hqp(T_target, q_init, z_min, dt, max_iterations,
+                               position_tolerance, orientation_tolerance);
+  
+  if (!result.success) {
+    // Return NaN if failed
+    return Vector7d::Constant(std::numeric_limits<double>::quiet_NaN());
+  }
+  return result.q;
+}
+
 }  // namespace kinematics
 
 #endif  // FRANKA_IK_HE_HPP

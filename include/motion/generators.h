@@ -65,9 +65,8 @@ class JointTrajectory : public PandaTrajectory {
  * It wraps an existing JointTrajectory, densely samples it, and for every
  * sample whose FK z-coordinate falls below the height limit, it lifts the
  * Cartesian pose to the limit and solves IK. The corrected joint positions
- * are stored and velocities/accelerations are computed via finite differences.
- * This replaces the trajectory algorithm for violating sections while keeping
- * the original timing.
+ * are then re-planned using the time-optimal trajectory planner to produce
+ * smooth, dynamically feasible velocities and accelerations.
  */
 class HeightConstrainedJointTrajectory : public JointTrajectory {
  public:
@@ -75,11 +74,19 @@ class HeightConstrainedJointTrajectory : public JointTrajectory {
    * @param base        The original (possibly violating) joint trajectory.
    * @param height_limit Minimum allowed EE z-coordinate.
    * @param dt          Sampling interval in seconds (default 1 ms).
+   * @param max_deviation Maximum deviation for re-planning blending (default 0.001).
+   * @param speed_factor Speed factor for re-planning (default 0.2).
+   * @param timeout     Timeout for trajectory computation in seconds (default 30).
+   * @param max_waypoints Maximum number of waypoints for re-planning (0 = no limit).
    */
   HeightConstrainedJointTrajectory(
       std::shared_ptr<JointTrajectory> base,
       double height_limit,
-      double dt = 0.001);
+      double dt = 0.001,
+      double max_deviation = 0.001,
+      double speed_factor = 0.2,
+      double timeout = kDefaultTimeout,
+      int max_waypoints = 2000);
 
   double getDuration() override;
   Vector7d getJointPositions(double time) override;
@@ -88,16 +95,8 @@ class HeightConstrainedJointTrajectory : public JointTrajectory {
 
  private:
   double duration_;
-  double dt_;
-  int num_samples_;
-  std::vector<Vector7d> q_;    // corrected joint positions
-  std::vector<Vector7d> dq_;   // joint velocities (finite diff)
-  std::vector<Vector7d> ddq_;  // joint accelerations (finite diff)
-
-  int _timeToIndex(double time) const;
-  double _indexToTime(int index) const;
-  // Linear interpolation between two samples
-  Vector7d _lerp(const std::vector<Vector7d> &data, double time) const;
+  // NOTE: uses inherited PandaTrajectory::traj_ — do NOT redeclare traj_ here
+  //       or it will shadow the base-class member that _computeTrajectory sets.
 };
 
 class CartesianTrajectory : public PandaTrajectory {

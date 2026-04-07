@@ -136,6 +136,16 @@ class Panda {
       const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
       double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
       double success_threshold = kMoveToJointPositionThreshold);
+  std::vector<Vector7d> getJointTrajectory(
+      const Vector7d &position,
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = 0.001,
+      double max_deviation = 0.0);
+  std::vector<Vector7d> getJointTrajectory(
+      std::vector<Vector7d> &waypoints,
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = 0.001,
+      double max_deviation = 0.0);
   Eigen::Vector3d getPosition();
   Eigen::Vector4d getOrientation(bool scalar_first = false);
   Eigen::Vector4d getOrientationScalarLast();

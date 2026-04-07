@@ -70,6 +70,72 @@ PYBIND11_MODULE(_core, m) {
         R"delim(
           Same as :py:func:`ik` above, but takes position and orientation arguments.
           )delim");
+          
+  // IKHQPResult struct for returning detailed HQP IK results
+  py::class_<kinematics::IKHQPResult>(m, "IKHQPResult")
+      .def_readonly("q", &kinematics::IKHQPResult::q)
+      .def_readonly("success", &kinematics::IKHQPResult::success)
+      .def_readonly("iterations", &kinematics::IKHQPResult::iterations)
+      .def_readonly("position_error", &kinematics::IKHQPResult::position_error)
+      .def_readonly("orientation_error", &kinematics::IKHQPResult::orientation_error)
+      .def_readonly("height_margin", &kinematics::IKHQPResult::height_margin);
+
+  // HQP-based IK with height constraint
+  m.def("ik_hqp",
+        py::overload_cast<const Eigen::Matrix4d &, const Vector7d &, double,
+                          double, int, double, double, double, double>(
+            &kinematics::ik_hqp),
+        py::arg("O_T_EE"), py::arg("q_init"), py::arg("z_min"),
+        py::arg("dt") = 0.001, py::arg("max_iterations") = 100,
+        py::arg("position_tolerance") = 1e-4,
+        py::arg("orientation_tolerance") = 1e-3,
+        py::arg("damping") = 0.05, py::arg("step_size") = 0.5,
+        R"delim(
+          Compute inverse kinematics using Hierarchical Quadratic Programming (HQP).
+          
+          This solver is designed for continuous trajectory tracking. It starts from
+          q_init and iteratively converges to the target pose while respecting the
+          height constraint. Using the previous solution as q_init ensures smooth,
+          continuous joint trajectories without discontinuities.
+          
+          Solves:
+            min_{dq} 0.5 * ||dq||^2 + regularization
+          Subject to:
+            Primary Task: J(q) * dq = dx  (Cartesian trajectory tracking)
+            Height Constraint: z(q) + dz/dq * dq >= z_min  (floor avoidance)
+            Joint Limits: q_min <= q + dq <= q_max
+          
+          Args:
+            O_T_EE: Homogeneous transform (4x4) describing target end-effector pose.
+            q_init: Initial joint configuration to seed the optimization. For trajectory
+                    tracking, pass the previous waypoint's solution to ensure continuity.
+            z_min: Minimum allowed end-effector height (floor constraint).
+            dt: Time step for constraint linearization (default: 0.001).
+            max_iterations: Maximum optimization iterations (default: 100).
+            position_tolerance: Position convergence tolerance in meters (default: 1e-4).
+            orientation_tolerance: Orientation convergence tolerance in radians (default: 1e-3).
+            damping: Damping factor for least-squares (default: 0.05).
+            step_size: Step size scaling factor (default: 0.5).
+            
+          Returns:
+            IKHQPResult with fields: q (joint positions), success (bool), 
+            iterations (int), position_error (double), orientation_error (double),
+            height_margin (double, how much above z_min).
+          )delim");
+
+  m.def("ik_hqp",
+        py::overload_cast<const Eigen::Vector3d &, const Eigen::Vector4d &,
+                          const Vector7d &, double, double, int, double, double,
+                          double, double>(&kinematics::ik_hqp),
+        py::arg("position"), py::arg("orientation"), py::arg("q_init"),
+        py::arg("z_min"), py::arg("dt") = 0.001, py::arg("max_iterations") = 100,
+        py::arg("position_tolerance") = 1e-4,
+        py::arg("orientation_tolerance") = 1e-3,
+        py::arg("damping") = 0.05, py::arg("step_size") = 0.5,
+        R"delim(
+          Same as :py:func:`ik_hqp` above, but takes position and orientation arguments.
+          )delim");
+          
   m.def("fk", &kinematics::fk, py::arg("q"), R"delim(
      Computes end-effector pose in base frame from joint positions.
   )delim");
@@ -92,15 +158,27 @@ PYBIND11_MODULE(_core, m) {
              motion::JointTrajectory,
              std::shared_ptr<motion::HeightConstrainedJointTrajectory>>(
       m, "HeightConstrainedJointTrajectory")
-      .def(py::init<std::shared_ptr<motion::JointTrajectory>, double, double>(),
-           py::call_guard<py::gil_scoped_release>(),
+      .def(py::init<std::shared_ptr<motion::JointTrajectory>, double, double, double, double, double, int>(),
            py::arg("base_trajectory"),
            py::arg("height_limit"),
            py::arg("dt") = 0.001,
+           py::arg("max_deviation") = 0.001,
+           py::arg("speed_factor") = 0.2,
+           py::arg("timeout") = motion::kDefaultTimeout,
+           py::arg("max_waypoints") = 2000,
            R"delim(
              A joint trajectory that enforces a minimum end-effector height.
              Wraps an existing JointTrajectory and corrects violating samples
-             via FK/IK. Velocities and accelerations are computed via finite differences.
+             via FK/IK. Re-plans through corrected waypoints for smooth velocities.
+
+             Args:
+               base_trajectory: The original joint trajectory to constrain.
+               height_limit: Minimum allowed end-effector z-coordinate.
+               dt: Sampling interval in seconds (default: 0.001).
+               max_deviation: Maximum deviation for blending in re-planning (default: 0.001).
+               speed_factor: Speed factor for re-planning (default: 0.2).
+               timeout: Timeout for trajectory computation in seconds (default: 30).
+               max_waypoints: Maximum waypoints for re-planning (default: 2000, 0 = no limit).
            )delim")
       .def("get_duration", &motion::HeightConstrainedJointTrajectory::getDuration)
       .def("get_joint_positions",
@@ -372,6 +450,36 @@ PYBIND11_MODULE(_core, m) {
            R"delim(
                Convenience function similar to :py:func:`move_to_pose`, moves the end-effector
                into the starting position (cf. :py:obj:`constants.JOINT_POSITION_START`).
+               )delim")
+      .def("get_joint_trajectory",
+           py::overload_cast<const Vector7d &, double, double, double>(
+               &Panda::getJointTrajectory),
+           py::arg("position"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = 0.001,
+           py::arg("max_deviation") = 0.0,
+           R"delim(
+               Get the joint trajectory that would be used by :py:func:`move_to_joint_position`
+               without executing it.
+
+               Args:
+                 position: Target joint positions.
+                 speed_factor: Speed factor for trajectory generation (default: 0.2).
+                 dt: Time step for sampling the trajectory in seconds (default: 0.001).
+                 max_deviation: Maximum deviation for blending between waypoints in radians (default: 0.0).
+
+               Returns:
+                 List of joint positions as numpy arrays of shape (N, 7), where N is the number of samples.
+               )delim")
+      .def("get_joint_trajectory",
+           py::overload_cast<std::vector<Vector7d> &, double, double, double>(
+               &Panda::getJointTrajectory),
+           py::arg("waypoints"),
+           py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = 0.001,
+           py::arg("max_deviation") = 0.0,
+           R"delim(
+               Same as :py:func:`get_joint_trajectory` above, but with multiple waypoints.
                )delim")
       .def("set_default_behavior", &Panda::setDefaultBehavior)
       .def("update_robot_state", &Panda::update_robot_state, R"delim(
