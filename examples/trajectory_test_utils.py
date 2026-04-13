@@ -13,6 +13,14 @@ import logging
 import numpy as np
 import panda_py
 from panda_py._core import JointTrajectory, HeightConstrainedJointTrajectory
+from panda_py.motion import (
+    prefilter_waypoints,
+    build_joint_trajectory,
+    build_height_constrained,
+    DEFAULT_HEIGHT_LIMIT,
+    DEFAULT_SPEED_FACTOR,
+    DEFAULT_MAX_DEVIATION,
+)
 
 # Ensure examples/ is on sys.path so trajectory_transformer is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -21,10 +29,8 @@ from trajectory_transformer import TrajectoryTransformer
 # =============================================================================
 # Default configuration (scripts may override individual values)
 # =============================================================================
-DEFAULT_NPY_PATH = '/home/talte/repos/tactile_panda/primitive_files/pose_34.npy'
-DEFAULT_HEIGHT_LIMIT = 0.15       # metres
-DEFAULT_SPEED_FACTOR = 0.2
-DEFAULT_MAX_DEVIATION = 0.0001
+# DEFAULT_NPY_PATH = '/home/talte/repos/tactile_panda/primitive_files/pose_34.npy'
+DEFAULT_NPY_PATH = '/home/talte/repos/tactile_panda/primitive_files/pose_34_downsampled_d0.0005.npy'
 DEFAULT_N_DOWNSAMPLE = 200
 DEFAULT_TILT_DIRECTION = np.array([1.0, 0.0])
 DEFAULT_ROTATION_AXIS = 'z'
@@ -50,6 +56,75 @@ def downsample_trajectory(q_full, n_downsample=None):
     return q_full[idx]
 
 
+def downsample_by_distance(q_full, min_distance):
+    """
+    Downsample a trajectory by keeping only waypoints that are at least
+    *min_distance* (joint-space L2 norm) away from the last kept waypoint.
+
+    Always keeps the first and last waypoints.
+    Returns the filtered array.
+    """
+    if len(q_full) < 2 or min_distance <= 0:
+        return q_full.copy()
+    filtered = [q_full[0]]
+    for i in range(1, len(q_full)):
+        if np.linalg.norm(q_full[i] - filtered[-1]) >= min_distance:
+            filtered.append(q_full[i])
+    # Always keep the last point
+    if not np.allclose(filtered[-1], q_full[-1]):
+        filtered.append(q_full[-1])
+    return np.array(filtered)
+
+
+def suggest_downsample_distances(q_full, factors=(2, 4, 8)):
+    """
+    Compute the min_distance values that would roughly downsample *q_full*
+    by the given factors.
+
+    Uses binary search: for each target count N/factor, find the distance
+    threshold that yields approximately that many points.
+
+    Returns a dict {factor: (distance, resulting_count)}.
+    """
+    n_orig = len(q_full)
+    if n_orig < 3:
+        return {f: (0.0, n_orig) for f in factors}
+
+    # Precompute consecutive distances
+    dists = np.array([np.linalg.norm(q_full[i] - q_full[i - 1])
+                      for i in range(1, n_orig)])
+
+    def count_at_distance(d):
+        """How many waypoints survive with threshold *d*."""
+        if d <= 0:
+            return n_orig
+        kept = 1
+        acc = 0.0
+        for di in dists:
+            acc += di
+            if acc >= d:
+                kept += 1
+                acc = 0.0
+        return kept + 1  # +1 for last point always kept
+
+    result = {}
+    for factor in factors:
+        target = max(n_orig // factor, 2)
+        lo, hi = 0.0, float(dists.sum())
+        # Binary search for threshold
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            c = count_at_distance(mid)
+            if c > target:
+                lo = mid
+            else:
+                hi = mid
+        dist_val = (lo + hi) / 2
+        final_count = count_at_distance(dist_val)
+        result[factor] = (dist_val, final_count)
+    return result
+
+
 # =============================================================================
 # Transformer setup
 # =============================================================================
@@ -67,26 +142,18 @@ def make_transformer(log_level=logging.WARNING):
 # Pipeline helpers
 # =============================================================================
 
-def prefilter_waypoints(waypoints, min_distance):
-    """Remove consecutive waypoints closer than *min_distance*."""
-    if len(waypoints) < 2:
-        return waypoints
-    filtered = [waypoints[0]]
-    for i in range(1, len(waypoints)):
-        if np.linalg.norm(waypoints[i] - filtered[-1]) >= min_distance:
-            filtered.append(waypoints[i])
-    if not np.allclose(filtered[-1], waypoints[-1]):
-        filtered.append(waypoints[-1])
-    return np.array(filtered)
-
 
 def transform_trajectory(transformer, q_trajectory, tilt_deg, rot_deg,
-                         tilt_direction=None, rotation_axis=None):
+                         tilt_direction=None, rotation_axis=None,
+                         use_pink=False):
     """
     FK → Cartesian transform → IK.
 
     Returns (q_transformed, ik_valid, ik_total).
     *q_transformed* may be shorter than input if IK fails for some poses.
+
+    If *use_pink* is True, uses the pink differential-IK backend with
+    interpolation disabled (only successfully solved waypoints are returned).
     """
     tilt_dir = tilt_direction if tilt_direction is not None else DEFAULT_TILT_DIRECTION
     rot_axis = rotation_axis or DEFAULT_ROTATION_AXIS
@@ -109,70 +176,22 @@ def transform_trajectory(transformer, q_trajectory, tilt_deg, rot_deg,
             rotate_orientation=True,
             tilt_angle=tilt_rad,
             tilt_direction=tilt_dir,
-            tilt_trajectory=True,
+            tilt_trajectory=False,
         )
 
     # IK
     q_init = q_trajectory[0]
-    q_transformed, valid_idx = transformer.cartesian_to_joints(
-        trans_pos, trans_ori, q_init=q_init, use_hqp=False,
-    )
+    if use_pink:
+        q_transformed, valid_idx = transformer.cartesian_to_joints_pink(
+            trans_pos, trans_ori, q_init=q_init, skip_interpolation=True,
+        )
+    else:
+        q_transformed, valid_idx = transformer.cartesian_to_joints(
+            trans_pos, trans_ori, q_init=q_init, use_hqp=False,
+        )
 
     return q_transformed, len(q_transformed), len(trans_pos)
 
-
-def build_joint_trajectory(q_waypoints, speed_factor=None, max_deviation=None,
-                           timeout=60.0, min_waypoints=10):
-    """
-    Attempt to build a JointTrajectory with gradual waypoint reduction.
-
-    Returns (joint_traj, n_waypoints_used, n_waypoints_before, was_reduced)
-    or raises on failure.
-    """
-    sf = speed_factor if speed_factor is not None else DEFAULT_SPEED_FACTOR
-    md = max_deviation if max_deviation is not None else DEFAULT_MAX_DEVIATION
-
-    q_filtered = prefilter_waypoints(q_waypoints, 2.5 * md)
-    n_full = len(q_filtered)
-
-    # Build candidate counts: full, half, quarter, … down to min_waypoints
-    candidates = []
-    n = n_full
-    while n >= min_waypoints:
-        candidates.append(n)
-        n = n // 2
-
-    for n_try in candidates:
-        if n_try == n_full:
-            q_try = q_filtered
-        else:
-            idx = np.linspace(0, len(q_filtered) - 1, n_try, dtype=int)
-            q_try = q_filtered[idx]
-        wps = [q.reshape(7, 1) for q in q_try]
-        try:
-            jt = JointTrajectory(
-                waypoints=wps, speed_factor=sf,
-                max_deviation=md, timeout=timeout,
-            )
-            return jt, n_try, n_full, (n_try < n_full)
-        except Exception:
-            continue
-
-    raise RuntimeError(
-        f'JointTrajectory failed at all counts ({n_full}→{candidates[-1]})')
-
-
-def build_height_constrained(joint_traj, height_limit=None, dt=0.01):
-    """
-    Build a HeightConstrainedJointTrajectory from *joint_traj*.
-    Returns the constrained trajectory object.
-    """
-    hl = height_limit if height_limit is not None else DEFAULT_HEIGHT_LIMIT
-    return HeightConstrainedJointTrajectory(
-        base_trajectory=joint_traj,
-        height_limit=hl,
-        dt=dt,
-    )
 
 
 # =============================================================================
@@ -181,10 +200,13 @@ def build_height_constrained(joint_traj, height_limit=None, dt=0.01):
 
 def test_combination(transformer, q_trajectory, tilt_deg, rot_deg,
                      height_limit=None, speed_factor=None,
-                     max_deviation=None):
+                     max_deviation=None, use_pink=False):
     """
     Run the full pipeline for one tilt/rotation combo.
     Returns a result dict with status flags, data for plotting, and errors.
+
+    If *use_pink* is True, use the pink differential-IK backend with
+    interpolation disabled.
     """
     hl = height_limit if height_limit is not None else DEFAULT_HEIGHT_LIMIT
     sf = speed_factor if speed_factor is not None else DEFAULT_SPEED_FACTOR
@@ -205,7 +227,7 @@ def test_combination(transformer, q_trajectory, tilt_deg, rot_deg,
     # --- Transform (FK → Cartesian → IK) ---
     try:
         q_transformed, ik_valid, ik_total = transform_trajectory(
-            transformer, q_trajectory, tilt_deg, rot_deg)
+            transformer, q_trajectory, tilt_deg, rot_deg, use_pink=use_pink)
     except Exception as e:
         result['error'] = f'Transform failed: {e}'
         return result
@@ -235,9 +257,10 @@ def test_combination(transformer, q_trajectory, tilt_deg, rot_deg,
 
     # --- HeightConstrainedJointTrajectory ---
     try:
-        ct = build_height_constrained(jt, height_limit=hl)
+        ct, ct_type = build_height_constrained(jt, height_limit=hl, max_deviation=md)
         result['height_constrained_ok'] = True
         result['height_constrained_duration'] = ct.get_duration()
+        result['height_constrained_type'] = ct_type
         result['constrained_traj'] = ct
     except Exception as e:
         result['error'] = f'HeightConstrained failed: {e}'

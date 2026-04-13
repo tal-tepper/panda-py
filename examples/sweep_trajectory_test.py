@@ -30,6 +30,8 @@ from trajectory_test_utils import (
     is_problem,
     plot_problem,
     print_summary,
+    downsample_by_distance,
+    suggest_downsample_distances,
     DEFAULT_HEIGHT_LIMIT,
     DEFAULT_MAX_DEVIATION,
 )
@@ -37,7 +39,21 @@ from trajectory_test_utils import (
 # =============================================================================
 # Configuration
 # =============================================================================
-NPY_PATH = sys.argv[1] if len(sys.argv) > 1 else None
+
+# --- CLI ---
+import argparse
+_parser = argparse.ArgumentParser(
+    description='Sweep test for trajectory pipeline.',
+    formatter_class=argparse.RawDescriptionHelpFormatter)
+_parser.add_argument('npy_path', nargs='?', default=None,
+                     help='Path to .npy trajectory file')
+_parser.add_argument('--min-distance', '-d', type=float, default=None,
+                     help='Min joint-space L2 distance between consecutive '
+                          'waypoints for downsampling (0 = no downsampling)')
+_args = _parser.parse_args()
+
+NPY_PATH = _args.npy_path
+MIN_DISTANCE = _args.min_distance
 
 PRIMITIVES = ['poke', 'left_and_right', 'back_and_forth']
 TILT_ANGLES_DEG = list(range(0, 35, 10))        # 0, 10, 20, 30
@@ -61,6 +77,23 @@ print(f"Tilt angles:    {TILT_ANGLES_DEG}°")
 print(f"Rotation angles: {ROTATION_ANGLES_DEG}°")
 
 # -----------------------------------------------------------------------------
+# Suggest downsample distances
+# -----------------------------------------------------------------------------
+print(f"\n--- Downsample distance suggestions (joint-space L2) ---")
+for prim_name in PRIMITIVES:
+    if prim_name not in raw_data:
+        continue
+    q_tmp = np.array(raw_data[prim_name]['q'])
+    suggestions = suggest_downsample_distances(q_tmp, factors=(2, 4, 8))
+    parts = [f"{f}x → d={d:.6f} ({n} wp)" for f, (d, n) in suggestions.items()]
+    print(f"  {prim_name:20s} ({len(q_tmp):5d} wp)  {' | '.join(parts)}")
+
+if MIN_DISTANCE is not None and MIN_DISTANCE > 0:
+    print(f"\n  ► Using --min-distance={MIN_DISTANCE:.6f}")
+else:
+    print(f"\n  ► No downsampling (use --min-distance / -d to enable)")
+
+# -----------------------------------------------------------------------------
 # Compute min height after IK for all primitives (for use as height limit)
 # -----------------------------------------------------------------------------
 print("\nComputing minimum height after IK for all primitives...")
@@ -70,7 +103,7 @@ for prim_name in PRIMITIVES:
         continue
     q_full = np.array(raw_data[prim_name]['q'])
     # Use default tilt/rot (0,0) for min height check
-    result = test_combination(make_transformer(), q_full, 0, 0)
+    result = test_combination(make_transformer(), q_full, 0, 0, use_pink=True)
     if result.get('q_transformed') is not None:
         from trajectory_test_utils import _compute_heights
         h = _compute_heights(result['q_transformed'])
@@ -93,6 +126,9 @@ total = len(PRIMITIVES) * len(TILT_ANGLES_DEG) * len(ROTATION_ANGLES_DEG)
 count = 0
 all_results = {}
 problems = []
+primitive_times = {}  # prim_name → list of elapsed times
+
+sweep_t0 = time.time()
 
 for prim_name in PRIMITIVES:
     if prim_name not in raw_data:
@@ -101,9 +137,16 @@ for prim_name in PRIMITIVES:
 
     q_full = np.array(raw_data[prim_name]['q'])
 
+    # Optional distance-based downsampling
+    if MIN_DISTANCE is not None and MIN_DISTANCE > 0:
+        q_full = downsample_by_distance(q_full, MIN_DISTANCE)
+
     print(f"\n{'=' * 70}")
     print(f"Primitive: {prim_name}  ({len(q_full)} waypoints)")
     print(f"{'=' * 70}")
+
+    prim_t0 = time.time()
+    prim_elapsed_list = []
 
     for tilt_deg in TILT_ANGLES_DEG:
         for rot_deg in ROTATION_ANGLES_DEG:
@@ -111,7 +154,7 @@ for prim_name in PRIMITIVES:
             tag = f"{prim_name}/tilt={tilt_deg}°/rot={rot_deg}°"
 
             t0 = time.time()
-            result = test_combination(transformer, q_full, tilt_deg, rot_deg)
+            result = test_combination(transformer, q_full, tilt_deg, rot_deg, use_pink=True)
             elapsed = time.time() - t0
 
             # Build status string
@@ -138,8 +181,25 @@ for prim_name in PRIMITIVES:
 
             result['tag'] = tag
             all_results[tag] = result
+            prim_elapsed_list.append(elapsed)
             if flagged:
                 problems.append(result)
+
+    # Per-primitive timing summary
+    prim_total_time = time.time() - prim_t0
+    n_combos = len(prim_elapsed_list)
+    if n_combos:
+        avg_t = np.mean(prim_elapsed_list)
+        med_t = np.median(prim_elapsed_list)
+        min_t = np.min(prim_elapsed_list)
+        max_t = np.max(prim_elapsed_list)
+        print(f"  ┌─ {prim_name} timing: {n_combos} combos in {prim_total_time:.1f}s "
+              f"(avg {avg_t:.1f}s, med {med_t:.1f}s, min {min_t:.1f}s, max {max_t:.1f}s)")
+    primitive_times[prim_name] = {
+        'total': prim_total_time,
+        'count': n_combos,
+        'times': prim_elapsed_list,
+    }
 
 # =============================================================================
 # Plot problematic cases
@@ -164,6 +224,18 @@ if problems:
 # Summary
 # =============================================================================
 print_summary(problems, count)
+
+sweep_elapsed = time.time() - sweep_t0
+print(f"\n--- Timing summary ---")
+print(f"  {'Primitive':<20s} {'Combos':>6s} {'Total':>8s} {'Avg':>7s} {'Med':>7s} {'Min':>7s} {'Max':>7s}")
+print(f"  {'-'*20} {'-'*6} {'-'*8} {'-'*7} {'-'*7} {'-'*7} {'-'*7}")
+for prim_name, pt in primitive_times.items():
+    ts = pt['times']
+    if ts:
+        print(f"  {prim_name:<20s} {pt['count']:6d} {pt['total']:7.1f}s "
+              f"{np.mean(ts):6.1f}s {np.median(ts):6.1f}s "
+              f"{np.min(ts):6.1f}s {np.max(ts):6.1f}s")
+print(f"  {'TOTAL':<20s} {count:6d} {sweep_elapsed:7.1f}s")
 
 print(f"\n{'=' * 70}")
 print("DONE")

@@ -464,6 +464,7 @@ class TrajectoryTransformer:
         q_init: Optional[np.ndarray] = None,
         collect_failure_details: bool = False,
         pink_kwargs: Optional[dict] = None,
+        skip_interpolation: bool = False,
     ) -> Tuple[np.ndarray, List[int]]:
         """
         Alternate IK pipeline that uses the external `pink` solver if available.
@@ -555,44 +556,68 @@ class TrajectoryTransformer:
                 q_flat = None
 
                 if use_task_api and robot is not None:
-                    # Build a pink.Configuration from the robot model/data and current q
+                    # Iterative differential-IK via pink
+                    # solve_ik returns a velocity dq; we integrate q += dq*dt
+                    # and repeat until the Cartesian error is small enough.
                     try:
-                        # pink expects a full configuration vector matching model.nq
+                        import pinocchio as pin
+
+                        # Build full-dimension config (model.nq may include fingers)
                         q_cfg = np.array(robot.q0).copy() if hasattr(robot, 'q0') else np.zeros(robot.model.nq)
                         q_cfg[:len(q_current)] = q_current.copy()
-                        configuration = pink.Configuration(robot.model, robot.data, q_cfg)
 
-                        # FrameTask expects frame name and costs (position_cost, orientation_cost)
+                        # Target SE3 for this waypoint
+                        se3_target = pin.SE3(orientations[i], positions[i])
+
+                        # Tasks (re-created per waypoint for clarity)
                         frame_task = pink.FrameTask(ee_frame, position_cost=1.0, orientation_cost=1.0)
-                        # Small posture cost to regularize solutions
-                        posture = pink.PostureTask(cost=0.01)
+                        frame_task.set_target(se3_target)
 
-                        tasks = [frame_task, posture]
+                        posture_task = pink.PostureTask(cost=0.01)
 
-                        # Call solve_ik with a small dt and qpoases solver if available
-                        try:
-                            q_sol = pink.solve_ik(configuration, tasks, 0.01, solver='qpoases', damping=0.05)
-                            if q_sol is not None:
-                                q_arr = np.array(q_sol).flatten()
-                                # Extract the first 7 joints (arm) from the full solution
-                                q_flat = q_arr[:7]
-                        except Exception as e:
-                            # If task-based solve fails, fall back to heuristic calls below
-                            q_flat = None
-                            if collect_failure_details:
-                                self.ik_failure_details.append({
-                                    'index': i,
-                                    'reason': 'pink_task_error',
-                                    'position': positions[i].copy(),
-                                    'details': f"{type(e).__name__}: {e}"
-                                })
+                        # Convergence loop
+                        dt = 0.01
+                        max_iters = 50
+                        pos_tol = 1e-3   # 1 mm
+                        ori_tol = 1e-2   # ~0.6°
+                        solver_name_qp = 'quadprog'
+
+                        for _iter in range(max_iters):
+                            configuration = pink.Configuration(
+                                robot.model, robot.data, q_cfg)
+
+                            # Posture target = current config (regularise around seed)
+                            posture_task.set_target_from_configuration(configuration)
+
+                            velocity = pink.solve_ik(
+                                configuration, [frame_task, posture_task],
+                                dt, solver=solver_name_qp, damping=1e-4)
+
+                            # Integrate
+                            q_cfg = pin.integrate(
+                                robot.model, q_cfg, velocity * dt)
+
+                            # Check convergence
+                            pin.forwardKinematics(robot.model, robot.data, q_cfg)
+                            pin.updateFramePlacements(robot.model, robot.data)
+                            fid = robot.model.getFrameId(ee_frame)
+                            current_se3 = robot.data.oMf[fid]
+                            pos_err = np.linalg.norm(
+                                current_se3.translation - se3_target.translation)
+                            ori_err = np.linalg.norm(
+                                pin.log3(current_se3.rotation.T @ se3_target.rotation))
+
+                            if pos_err < pos_tol and ori_err < ori_tol:
+                                break
+
+                        # Extract arm joints (first 7)
+                        q_flat = np.array(q_cfg[:7]).flatten()
                     except Exception as e:
-                        # Failed to construct Configuration or tasks
                         q_flat = None
                         if collect_failure_details:
                             self.ik_failure_details.append({
                                 'index': i,
-                                'reason': 'pink_config_error',
+                                'reason': 'pink_task_error',
                                 'position': positions[i].copy(),
                                 'details': f"{type(e).__name__}: {e}"
                             })
@@ -692,7 +717,7 @@ class TrajectoryTransformer:
                     })
 
         # If we have some valid points but not all, interpolate missing waypoints in joint space
-        if len(q_trajectory) > 1 and len(valid_indices) < n_waypoints:
+        if not skip_interpolation and len(q_trajectory) > 1 and len(valid_indices) < n_waypoints:
             q_full = np.empty((n_waypoints, 7))
             q_arr = np.array(q_trajectory)
             vi = np.array(valid_indices)
@@ -1135,114 +1160,87 @@ class TrajectoryTransformer:
         panda,
         writer,
         q_waypoints: np.ndarray,
-        # q_start: Optional[np.ndarray] = None,
         speed_factor: float = 0.1,
-        positions_transformed=None,
-        orientations_transformed=None
+        height_limit: float = 0.15,
     ) -> bool:
         """
-        Execute transformed trajectory and log data to HDF5.
-        
-        Uses panda.enable_logging() during execution, then processes the log
-        and bulk-adds the data to HDF5 after completion.
-        
+        Execute a height-constrained trajectory from joint waypoints and log data to HDF5.
+
+        Uses :py:func:`panda.move_to_joint_position_with_height_limit` which
+        performs the entire pipeline in C++ (prepend current position → build
+        time-optimal JointTrajectory → enforce height limit →  execute).
+
+        Logging is enabled before execution and processed afterwards.  The
+        robot returns to the first waypoint after execution.
+
         Args:
-            panda: Panda robot instance
-            writer: HDF5Writer instance
-            q_waypoints: Joint waypoints to execute [n_waypoints, 7]
-            q_start: Starting joint position (if None, uses current position)
-            speed_factor: Speed factor for trajectory execution (0.0-1.0)
-            
+            panda: Panda robot instance.
+            writer: HDF5Writer instance.
+            q_waypoints: Joint-space waypoints [n_waypoints, 7].
+            speed_factor: Speed factor for trajectory execution (0.0–1.0).
+            height_limit: Minimum allowed end-effector height (metres).
+
         Returns:
-            Boolean indicating success
+            True on success, False on failure.
         """
-        self.logger.info("="*60)
+        self.logger.info("=" * 60)
         self.logger.info("TRAJECTORY EXECUTION WITH LOGGING")
-        self.logger.info("="*60)
-        
+        self.logger.info("=" * 60)
+
         try:
-            # # Move to start position if provided
-            # if q_start is not None:
-            #     if self.verbose:
-            #         print("Moving to start position...")
-            #     panda.move_to_joint_position(q_start, dq_threshold=0.001)
-            
-            # Estimate number of samples based on trajectory length and speed
-            # Rough estimate: panda logs at 1000Hz, trajectory execution time depends on waypoints and speed\
-            #TODO : improve estimate based on actual trajectory time
-            num_samples = 8 * 1000  # Conservative estimate
-            #move to the first waypoint without logging
-            # target_pose = panda_py.fk(q_waypoints[0])
-            
-            # Convert rotation matrices to quaternions (move_to_pose expects quaternions [4,])
-            orientations_quat = np.array([R.from_matrix(rot).as_quat() for rot in orientations_transformed])
-            # self.logger.debug(f'positions_transformed shape: {positions_transformed.shape}, orientations_quat shape: {orientations_quat.shape}')
-            cur_pos = panda.get_position()
-            print(f"start position: {cur_pos}")
-            print(f'last z:{positions_transformed[-1,2]}, first z:{positions_transformed[0,2]}')
-            panda.move_to_pose(
-                positions_transformed[0],
-                orientations_quat[0],
-                speed_factor=speed_factor
-            )
-            # self.panda.move_to_pose(target_pose, speed_factor=speed_factor)
-            # panda.move_to_joint_position(q_waypoints[0],speed_factor=speed_factor)
-            self.logger.info("Enabling data logging...")
+            # --- diagnostics before execution ---
+            q_robot = np.array(panda.q)
+            q_start = q_waypoints[0]
+            pos_err = np.linalg.norm(q_robot - q_start)
+            self.logger.info(f"Waypoints:       {len(q_waypoints)}")
+            self.logger.info(f"Height limit:    {height_limit * 100:.1f} cm")
+            self.logger.info(f"Speed factor:    {speed_factor}")
+            self.logger.info(f"Position error to first waypoint: {pos_err:.6f} rad "
+                             f"({np.degrees(pos_err):.3f}°)")
+
+            # Move to the first waypoint (no logging yet)
+            self.logger.info("Moving to first waypoint...")
+            panda.move_to_joint_position(q_start, speed_factor=speed_factor)
+
+            # Estimate logging buffer from trajectory length
+            # Rough upper bound: ~1000 samples/s, assume duration ≈ n_waypoints * 0.01 / speed_factor
+            estimated_duration = len(q_waypoints) * 0.01 / max(speed_factor, 0.01)
+            num_samples = int(estimated_duration * 1000) + 2000  # generous margin
+            self.logger.info(f"Enabling data logging ({num_samples} samples buffer)...")
             panda.enable_logging(num_samples)
-            
-            # Enable writing for xela and camera data during execution
+
+            # Enable external sensor writing during execution
             writer.start_writing()
-            
-            # Execute transformed trajectory
-            # self.logger.info(f"Executing trajectory with {len(q_waypoints)} waypoints...")
-            print(f'move_to_joint_position')
+
+            # Execute — everything (trajectory build + height constraint + control) in C++
+            self.logger.info("Executing height-constrained trajectory...")
+            wps = [q.tolist() for q in q_waypoints]
             t0 = time.time()
-            # success = panda.move_to_joint_position(
-            #     q_waypoints.tolist(),
-            #     speed_factor=speed_factor
-            # )
-            panda.move_to_pose(
-                positions_transformed,
-                orientations_quat,
-                speed_factor=speed_factor
+            success = panda.move_to_joint_position_with_height_limit(
+                wps, height_limit, speed_factor=speed_factor,
             )
-            
-            # Stop writing
+            exec_time = time.time() - t0
+
+            # Stop external sensor writing
             writer.stop_writing()
-            self.logger.info(f"Trajectory execution time: {time.time() - t0:.2f}s")
-            
-            
-            # Get logged data
+            self.logger.info(f"Execution time: {exec_time:.2f}s  success={success}")
+
+            # Retrieve logged data
             self.logger.info("Retrieving logged data...")
             log = panda.get_log()
-            
-            # self.logger.debug(f"Log keys: {log.keys()}")
-            self.logger.debug(f"Number of samples: {len(log['q'])}")
-            
-            # # Return to start position if provided
-            # if q_start is not None:
-            #     if self.verbose:
-            #         print("Returning to start position...")
-            #     panda.move_to_joint_position(q_start.tolist())
-            
-            # Process logged data and bulk-add to HDF5
-            self.logger.info("\nProcessing logged data to calculate forces...")
-            
+            self.logger.info(f"Logged samples: {len(log['q'])}")
+
+            # Process log → HDF5
+            self.logger.info("Processing logged data to calculate forces...")
             self._bulk_add_logged_data(panda, writer, log)
-            
-            self.logger.info("="*60)
-            # panda.move_to_joint_position(
-            #     q_waypoints[0],
-            #     speed_factor=speed_factor
-            # )
-            panda.move_to_pose(
-                positions_transformed[0],
-                orientations_quat[0],
-                speed_factor=speed_factor
-            )
-            cur_pos = panda.get_position()
-            print(f"Returned to start position: {cur_pos}")
-            
+
+            # Return to start position
+            self.logger.info("Returning to start position...")
+            panda.move_to_joint_position(q_start, speed_factor=speed_factor)
+            self.logger.info("=" * 60)
+
+            return success
+
         except Exception as e:
             self.logger.error(f"✗ Execution failed: {e}")
             writer.stop_writing()

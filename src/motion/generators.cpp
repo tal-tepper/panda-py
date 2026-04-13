@@ -219,7 +219,6 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
   Vector7d q_prev = base->getJointPositions(0.0);
   corrected_waypoints.push_back(q_prev);
   int num_corrected = 0;
-  int num_hqp_used = 0;
 
   for (int i = 1; i < num_samples; i++) {
     double t = i * dt;
@@ -231,64 +230,42 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
 
     Vector7d q_sample;
     if (z < height_limit) {
-      // Use HQP-based IK to find joint configuration that satisfies height constraint
-      // while tracking the target pose as closely as possible
-      
-      // First, lift the target pose to the height limit
+      // Lift the target pose to the height limit
       Eigen::Matrix4d target_pose = pose;
       target_pose(2, 3) = height_limit;
-      
-      // Use HQP IK solver with height constraint
-      kinematics::IKHQPResult hqp_result = kinematics::ik_hqp(
-          target_pose,
-          q_prev,          // seed from previous solution for continuity
-          z_constraint,    // minimum height constraint
-          dt,              // time step
-          50,              // max iterations
-          1e-4,            // position tolerance
-          1e-3,            // orientation tolerance
-          0.01,            // damping
-          1.0              // step size
-      );
-      
-      if (hqp_result.success) {
-        q_sample = hqp_result.q;
-        num_corrected++;
-        num_hqp_used++;
-      } else {
-        // Fallback to standard IK methods
-        Vector7d q_corrected = kinematics::ik(target_pose, q_prev, q_prev[6]);
 
-        if (std::isnan(q_corrected[0])) {
-          // Fallback: default q7
-          q_corrected = kinematics::ik(target_pose, q_prev);
-        }
-        if (std::isnan(q_corrected[0])) {
-          // Try all 4 IK solutions and pick nearest to previous
-          Eigen::Matrix<double, 4, 7> q_all =
-              kinematics::ik_full(target_pose, q_prev, q_prev[6]);
-          double best_dist = std::numeric_limits<double>::max();
-          for (int row = 0; row < 4; row++) {
-            Vector7d candidate = q_all.row(row);
-            if (!std::isnan(candidate[0])) {
-              double d = (candidate - q_prev).norm();
-              if (d < best_dist) {
-                best_dist = d;
-                q_corrected = candidate;
-              }
+      // Analytical IK methods
+      Vector7d q_corrected = kinematics::ik(target_pose, q_prev, q_prev[6]);
+
+      if (std::isnan(q_corrected[0])) {
+        // Fallback: default q7
+        q_corrected = kinematics::ik(target_pose, q_prev);
+      }
+      if (std::isnan(q_corrected[0])) {
+        // Try all 4 IK solutions and pick nearest to previous
+        Eigen::Matrix<double, 4, 7> q_all =
+            kinematics::ik_full(target_pose, q_prev, q_prev[6]);
+        double best_dist = std::numeric_limits<double>::max();
+        for (int row = 0; row < 4; row++) {
+          Vector7d candidate = q_all.row(row);
+          if (!std::isnan(candidate[0])) {
+            double d = (candidate - q_prev).norm();
+            if (d < best_dist) {
+              best_dist = d;
+              q_corrected = candidate;
             }
           }
         }
-        if (std::isnan(q_corrected[0])) {
-          // Last resort: keep original (will still violate but won't crash)
-          _log("warning",
-               "IK failed at t=%.4f (z=%.4f). Keeping original trajectory.",
-               t, z);
-          q_sample = q_orig;
-        } else {
-          q_sample = q_corrected;
-          num_corrected++;
-        }
+      }
+      if (std::isnan(q_corrected[0])) {
+        // Last resort: keep original (will still violate but won't crash)
+        _log("warning",
+             "IK failed at t=%.4f (z=%.4f). Keeping original trajectory.",
+             t, z);
+        q_sample = q_orig;
+      } else {
+        q_sample = q_corrected;
+        num_corrected++;
       }
     } else {
       q_sample = q_orig;
@@ -299,8 +276,8 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
   }
 
   _log("info",
-       "Height-constrained trajectory: %d/%d samples corrected (%d using HQP IK).",
-       num_corrected, num_samples, num_hqp_used);
+       "Height-constrained trajectory: %d/%d samples corrected.",
+       num_corrected, num_samples);
 
   // Log max joint jump between consecutive samples to detect discontinuities
   double max_jump = 0.0;
@@ -324,7 +301,7 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
     // Adaptive downsampling: keep first, last, and uniformly sampled points
     // Also keep waypoints at transitions (where correction occurred)
     _log("info",
-         "Downsampling from %zu to ~%d waypoints for re-planning.",
+         "Downsampling from %d to ~%d waypoints for re-planning.",
          corrected_waypoints.size(), max_waypoints);
     
     // Calculate step size to get approximately max_waypoints
@@ -346,7 +323,7 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
     waypoints_for_planning.push_back(corrected_waypoints.back());
     
     _log("info",
-         "Downsampled to %zu waypoints.",
+         "Downsampled to %d waypoints.",
          waypoints_for_planning.size());
   } else {
     waypoints_for_planning = corrected_waypoints;
@@ -356,7 +333,7 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
   // Use a small max_deviation to allow smoothing of micro-discontinuities.
   // This produces smooth, dynamically feasible velocities and accelerations.
   _log("info",
-       "Re-planning with %zu waypoints.",
+       "Re-planning with %d waypoints.",
        waypoints_for_planning.size());
 
   // Pre-filter waypoints to ensure minimum spacing > 2*max_deviation.
@@ -385,13 +362,13 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
     if (filtered.size() < 2) {
       // Not enough waypoints after filtering - use max_deviation=0 instead
       _log("warning",
-           "Only %zu waypoints after spacing filter (min_spacing=%.6f). "
+           "Only %d waypoints after spacing filter (min_spacing=%.6f). "
            "Falling back to max_deviation=0.",
            filtered.size(), min_spacing);
       max_deviation = 0.0;
     } else {
       _log("info",
-           "Pre-filtered from %zu to %zu waypoints (min_spacing=%.6f).",
+           "Pre-filtered from %d to %d waypoints (min_spacing=%.6f).",
            waypoints_for_planning.size(), filtered.size(), min_spacing);
       waypoints_for_planning = filtered;
     }

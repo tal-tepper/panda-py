@@ -19,6 +19,9 @@ namespace motion {
 const double kDefaultTimeout = 30.0;
 const double kDefaultJointSpeedFactor = 0.2;
 const double kDefaultCartesianSpeedFactor = 0.2;
+const double kDefaultHCDt = 0.01;
+const double kDefaultHCMaxDeviation = 0.0001;
+const double kDefaultBaseMaxDeviation = 0.0001;
 
 class PandaTrajectory {
  public:
@@ -39,6 +42,9 @@ class PandaTrajectory {
 
   py::object logger_;
   std::shared_ptr<time_optimal::Trajectory> traj_;
+
+  // Allow HeightConstrainedJointTrajectory to access base trajectory's traj_
+  friend class HeightConstrainedJointTrajectory;
 };
 
 class JointTrajectory : public PandaTrajectory {
@@ -82,8 +88,8 @@ class HeightConstrainedJointTrajectory : public JointTrajectory {
   HeightConstrainedJointTrajectory(
       std::shared_ptr<JointTrajectory> base,
       double height_limit,
-      double dt = 0.001,
-      double max_deviation = 0.001,
+      double dt = kDefaultHCDt,
+      double max_deviation = kDefaultHCMaxDeviation,
       double speed_factor = 0.2,
       double timeout = kDefaultTimeout,
       int max_waypoints = 2000);

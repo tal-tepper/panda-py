@@ -161,8 +161,8 @@ PYBIND11_MODULE(_core, m) {
       .def(py::init<std::shared_ptr<motion::JointTrajectory>, double, double, double, double, double, int>(),
            py::arg("base_trajectory"),
            py::arg("height_limit"),
-           py::arg("dt") = 0.001,
-           py::arg("max_deviation") = 0.001,
+           py::arg("dt") = motion::kDefaultHCDt,
+           py::arg("max_deviation") = motion::kDefaultHCMaxDeviation,
            py::arg("speed_factor") = 0.2,
            py::arg("timeout") = motion::kDefaultTimeout,
            py::arg("max_waypoints") = 2000,
@@ -174,8 +174,8 @@ PYBIND11_MODULE(_core, m) {
              Args:
                base_trajectory: The original joint trajectory to constrain.
                height_limit: Minimum allowed end-effector z-coordinate.
-               dt: Sampling interval in seconds (default: 0.001).
-               max_deviation: Maximum deviation for blending in re-planning (default: 0.001).
+               dt: Sampling interval in seconds (default: 0.01).
+               max_deviation: Maximum deviation for blending in re-planning (default: 0.0001).
                speed_factor: Speed factor for re-planning (default: 0.2).
                timeout: Timeout for trajectory computation in seconds (default: 30).
                max_waypoints: Maximum waypoints for re-planning (default: 2000, 0 = no limit).
@@ -295,12 +295,15 @@ PYBIND11_MODULE(_core, m) {
            py::arg("success_threshold") = Panda::kMoveToJointPositionThreshold)
       .def("move_to_joint_position_with_height_limit",
            py::overload_cast<std::vector<Vector7d> &, double, double,
+                             double, double,
                              const Vector7d &, const Vector7d &, double,
                              double>(
                &Panda::moveToJointPositionWithHeightLimit),
            py::call_guard<py::gil_scoped_release>(), py::arg("waypoints"),
            py::arg("height_limit"),
            py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = motion::kDefaultHCDt,
+           py::arg("max_deviation") = motion::kDefaultHCMaxDeviation,
            py::arg("stiffness") =
                controllers::JointTrajectory::kDefaultStiffness,
            py::arg("damping") =
@@ -311,12 +314,15 @@ PYBIND11_MODULE(_core, m) {
                Panda::kMoveToJointPositionThreshold)
       .def("move_to_joint_position_with_height_limit",
            py::overload_cast<const Vector7d &, double, double,
+                             double, double,
                              const Vector7d &, const Vector7d &, double,
                              double>(
                &Panda::moveToJointPositionWithHeightLimit),
            py::call_guard<py::gil_scoped_release>(), py::arg("positions"),
            py::arg("height_limit"),
            py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = motion::kDefaultHCDt,
+           py::arg("max_deviation") = motion::kDefaultHCMaxDeviation,
            py::arg("stiffness") =
                controllers::JointTrajectory::kDefaultStiffness,
            py::arg("damping") =
@@ -326,11 +332,14 @@ PYBIND11_MODULE(_core, m) {
            py::arg("success_threshold") =
                Panda::kMoveToJointPositionThreshold)
       .def("compute_trajectory_with_height_limit",
-           py::overload_cast<std::vector<Vector7d> &, double, double>(
+           py::overload_cast<std::vector<Vector7d> &, double, double,
+                             double, double>(
                &Panda::computeTrajectoryWithHeightLimit),
            py::call_guard<py::gil_scoped_release>(), py::arg("waypoints"),
            py::arg("height_limit"),
            py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = motion::kDefaultHCDt,
+           py::arg("max_deviation") = motion::kDefaultHCMaxDeviation,
            R"delim(
              Computes a joint trajectory with height-limit enforcement and returns it
              without executing. The returned trajectory object has the same interface
@@ -339,13 +348,46 @@ PYBIND11_MODULE(_core, m) {
              otherwise a HeightConstrainedJointTrajectory is returned.
            )delim")
       .def("compute_trajectory_with_height_limit",
-           py::overload_cast<const Vector7d &, double, double>(
+           py::overload_cast<const Vector7d &, double, double,
+                             double, double>(
                &Panda::computeTrajectoryWithHeightLimit),
            py::call_guard<py::gil_scoped_release>(), py::arg("position"),
            py::arg("height_limit"),
            py::arg("speed_factor") = motion::kDefaultJointSpeedFactor,
+           py::arg("dt") = motion::kDefaultHCDt,
+           py::arg("max_deviation") = motion::kDefaultHCMaxDeviation,
            R"delim(
              Single-target overload of :py:func:`compute_trajectory_with_height_limit`.
+           )delim")
+      .def("execute_trajectory", &Panda::executeTrajectory,
+           py::call_guard<py::gil_scoped_release>(), py::arg("trajectory"),
+           py::arg("stiffness") = controllers::JointTrajectory::kDefaultStiffness,
+           py::arg("damping") = controllers::JointTrajectory::kDefaultDamping,
+           py::arg("dq_threshold") =
+               controllers::JointTrajectory::kDefaultDqThreshold,
+           py::arg("success_threshold") = Panda::kMoveToJointPositionThreshold,
+           R"delim(
+               Execute a pre-computed trajectory on the robot.
+
+               Takes a :py:class:`JointTrajectory` (or
+               :py:class:`HeightConstrainedJointTrajectory`) and runs it
+               directly through the joint-trajectory controller — no
+               re-computation of the trajectory is performed.
+
+               This is useful when the trajectory was built offline using
+               :py:func:`panda_py.motion.build_joint_trajectory` and
+               :py:func:`panda_py.motion.build_height_constrained`, or
+               obtained from :py:func:`compute_trajectory_with_height_limit`.
+
+               Args:
+                 trajectory: Pre-computed JointTrajectory object.
+                 stiffness: Joint stiffness (default: [600, …]).
+                 damping: Joint damping (default: [50, …]).
+                 dq_threshold: Joint velocity threshold for completion.
+                 success_threshold: Position threshold for success check.
+
+               Returns:
+                 True if the robot reached the trajectory's final position.
            )delim")
       .def(
           "move_to_pose",

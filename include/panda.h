@@ -76,6 +76,8 @@ class Panda {
       const Vector7d &position,
       double height_limit,
       double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = motion::kDefaultHCDt,
+      double max_deviation = motion::kDefaultHCMaxDeviation,
       const Vector7d &stiffness = controllers::JointTrajectory::kDefaultStiffness,
       const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
       double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
@@ -84,6 +86,8 @@ class Panda {
       std::vector<Vector7d> &waypoints,
       double height_limit,
       double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = motion::kDefaultHCDt,
+      double max_deviation = motion::kDefaultHCMaxDeviation,
       const Vector7d &stiffness = controllers::JointTrajectory::kDefaultStiffness,
       const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
       double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
@@ -91,11 +95,21 @@ class Panda {
   std::shared_ptr<motion::JointTrajectory> computeTrajectoryWithHeightLimit(
       const Vector7d &position,
       double height_limit,
-      double speed_factor = motion::kDefaultJointSpeedFactor);
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = motion::kDefaultHCDt,
+      double max_deviation = motion::kDefaultHCMaxDeviation);
   std::shared_ptr<motion::JointTrajectory> computeTrajectoryWithHeightLimit(
       std::vector<Vector7d> &waypoints,
       double height_limit,
-      double speed_factor = motion::kDefaultJointSpeedFactor);
+      double speed_factor = motion::kDefaultJointSpeedFactor,
+      double dt = motion::kDefaultHCDt,
+      double max_deviation = motion::kDefaultHCMaxDeviation);
+  bool executeTrajectory(
+      std::shared_ptr<motion::JointTrajectory> trajectory,
+      const Vector7d &stiffness = controllers::JointTrajectory::kDefaultStiffness,
+      const Vector7d &damping = controllers::JointTrajectory::kDefaultDamping,
+      double dq_threshold = controllers::JointTrajectory::kDefaultDqThreshold,
+      double success_threshold = kMoveToJointPositionThreshold);
   bool moveToPose(
       std::vector<Eigen::Vector3d> &positions,
       std::vector<Eigen::Matrix<double, 4, 1>> &orientations,

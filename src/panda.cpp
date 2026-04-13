@@ -20,6 +20,71 @@ std::ostream &operator<<(std::ostream &os, const std::array<T, V> &vec) {
 }
 }  // namespace std
 
+// ---------------------------------------------------------------------------
+// Local helpers for robust trajectory construction
+// ---------------------------------------------------------------------------
+
+/// Remove consecutive waypoints closer than *threshold* (inf-norm on joints).
+/// Always keeps the first and last waypoint.
+static std::vector<Vector7d> prefilterWaypoints(
+    const std::vector<Vector7d> &waypoints, double threshold) {
+  if (waypoints.size() < 2) return waypoints;
+  std::vector<Vector7d> filtered;
+  filtered.push_back(waypoints.front());
+  for (size_t i = 1; i < waypoints.size(); ++i) {
+    if ((waypoints[i] - filtered.back()).lpNorm<Eigen::Infinity>() >= threshold) {
+      filtered.push_back(waypoints[i]);
+    }
+  }
+  // Ensure the last waypoint is always included
+  if (!filtered.back().isApprox(waypoints.back(), 1e-12)) {
+    filtered.push_back(waypoints.back());
+  }
+  return filtered;
+}
+
+/// Try building a JointTrajectory with progressively fewer waypoints
+/// (full → half → quarter → … down to *min_waypoints*).
+/// Returns nullptr on failure.
+static std::shared_ptr<motion::JointTrajectory> buildJointTrajectoryRobust(
+    const std::vector<Vector7d> &waypoints, double speed_factor,
+    double max_deviation, int min_waypoints = 10) {
+  // Prefilter near-duplicate waypoints (threshold = 2.5× max_deviation)
+  auto filtered = prefilterWaypoints(waypoints, 2.5 * max_deviation);
+  int n_full = static_cast<int>(filtered.size());
+
+  // Candidate counts: full, half, quarter, … down to min_waypoints
+  std::vector<int> candidates;
+  for (int n = n_full; n >= min_waypoints; n /= 2) {
+    candidates.push_back(n);
+  }
+  if (candidates.empty()) {
+    candidates.push_back(n_full);
+  }
+
+  for (int n_try : candidates) {
+    std::vector<Vector7d> wps;
+    if (n_try >= n_full) {
+      wps = filtered;
+    } else {
+      // Uniformly subsample
+      wps.reserve(n_try);
+      for (int i = 0; i < n_try; ++i) {
+        int idx = static_cast<int>(
+            std::round(static_cast<double>(i) * (n_full - 1) / (n_try - 1)));
+        wps.push_back(filtered[idx]);
+      }
+    }
+    try {
+      return std::make_shared<motion::JointTrajectory>(
+          wps, speed_factor, max_deviation);
+    } catch (...) {
+      continue;
+    }
+  }
+  return nullptr;  // all attempts failed
+}
+
 bool PandaContext::ok() {
   panda_.raiseError();
   auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -356,17 +421,20 @@ bool Panda::moveToJointPosition(std::vector<Vector7d> &waypoints,
 
 bool Panda::moveToJointPositionWithHeightLimit(
     const Vector7d &position, double height_limit, double speed_factor,
+    double dt, double max_deviation,
     const Vector7d &stiffness, const Vector7d &damping, double dq_threshold,
     double success_threshold) {
   std::vector<Vector7d> waypoints;
   waypoints.push_back(position);
   return moveToJointPositionWithHeightLimit(waypoints, height_limit,
-                                           speed_factor, stiffness, damping,
+                                           speed_factor, dt, max_deviation,
+                                           stiffness, damping,
                                            dq_threshold, success_threshold);
 }
 
 bool Panda::moveToJointPositionWithHeightLimit(
     std::vector<Vector7d> &waypoints, double height_limit, double speed_factor,
+    double dt, double max_deviation,
     const Vector7d &stiffness, const Vector7d &damping, double dq_threshold,
     double success_threshold) {
   stopController();
@@ -374,8 +442,8 @@ bool Panda::moveToJointPositionWithHeightLimit(
   _setState(robot_->readOnce());
   _log("info",
        "Initializing motion generation "
-       "(moveToJointPositionWithHeightLimit, z_min=%.4f).",
-       height_limit);
+       "(moveToJointPositionWithHeightLimit, z_min=%.4f, dt=%.4f, max_dev=%.6f).",
+       height_limit, dt, max_deviation);
 
   // Insert current position as the first waypoint
   waypoints.push_back(getJointPositions());
@@ -397,21 +465,24 @@ bool Panda::moveToJointPositionWithHeightLimit(
     return false;
   }
 
-  // Compute the time-optimal trajectory normally
-  auto base_traj = std::make_shared<motion::JointTrajectory>(
-      waypoints, speed_factor, 0.02);
+  // Build base trajectory with prefiltering + gradual reduction
+  auto base_traj = buildJointTrajectoryRobust(
+      waypoints, speed_factor, motion::kDefaultBaseMaxDeviation);
+  if (!base_traj) {
+    _log("error", "Failed to build base JointTrajectory (all waypoint counts failed).");
+    return false;
+  }
   if (base_traj->getDuration() == 0.0) {
     _log("info", "Already at goal.");
     return true;
   }
 
   // Check if the trajectory violates the height limit
-  const int kCheckSamples = 200;
   double duration = base_traj->getDuration();
-  double dt = duration / kCheckSamples;
+  double check_dt = duration / 200;
   bool has_violation = false;
-  for (int i = 0; i <= kCheckSamples; i++) {
-    double t = std::min(i * dt, duration);
+  for (int i = 0; i <= 200; i++) {
+    double t = std::min(i * check_dt, duration);
     Vector7d q_sample = base_traj->getJointPositions(t);
     double z = kinematics::fk(q_sample)(2, 3);
     if (z < height_limit) {
@@ -425,44 +496,34 @@ bool Panda::moveToJointPositionWithHeightLimit(
     _log("info", "Trajectory is height-safe. Executing directly.");
     traj = base_traj;
   } else {
-    // The time-optimal planner produced a trajectory that dips below the
-    // height limit. Wrap it in a HeightConstrainedJointTrajectory which
-    // densely samples the original at 1 ms intervals, corrects every
-    // violating sample via FK→lift z→IK (seeded sequentially for joint-
-    // space continuity), and returns corrected q, q̇, q̈ computed by
-    // finite differences.
     _log("warning",
          "Height violation detected. Computing corrected trajectory.");
     traj = std::make_shared<motion::HeightConstrainedJointTrajectory>(
-        base_traj, height_limit, 0.001, 0.001, speed_factor);
+        base_traj, height_limit, dt, max_deviation, speed_factor);
   }
 
-  auto ctrl = std::make_shared<controllers::JointTrajectory>(
-      traj, stiffness, damping, dq_threshold);
-  _startController(ctrl);
-  auto cb = _createTorqueCallback();
-  _runController(cb);
-  const Vector7d q =
-      Eigen::Map<const Vector7d>(robot_->readOnce().q.data());
-  return waypoints.back().isApprox(q, success_threshold);
+  return executeTrajectory(traj, stiffness, damping, dq_threshold,
+                           success_threshold);
 }
 
 std::shared_ptr<motion::JointTrajectory>
 Panda::computeTrajectoryWithHeightLimit(
-    const Vector7d &position, double height_limit, double speed_factor) {
+    const Vector7d &position, double height_limit, double speed_factor,
+    double dt, double max_deviation) {
   std::vector<Vector7d> waypoints;
   waypoints.push_back(position);
   return computeTrajectoryWithHeightLimit(waypoints, height_limit,
-                                          speed_factor);
+                                          speed_factor, dt, max_deviation);
 }
 
 std::shared_ptr<motion::JointTrajectory>
 Panda::computeTrajectoryWithHeightLimit(
     std::vector<Vector7d> &waypoints, double height_limit,
-    double speed_factor) {
+    double speed_factor, double dt, double max_deviation) {
   _setState(robot_->readOnce());
   _log("info",
-       "Computing trajectory with height limit (z_min=%.4f).", height_limit);
+       "Computing trajectory with height limit (z_min=%.4f, dt=%.4f, max_dev=%.6f).",
+       height_limit, dt, max_deviation);
 
   // Insert current position as the first waypoint
   waypoints.push_back(getJointPositions());
@@ -482,21 +543,24 @@ Panda::computeTrajectoryWithHeightLimit(
         std::to_string(z_goal) + " < " + std::to_string(height_limit) + ").");
   }
 
-  // Compute the time-optimal trajectory normally
-  auto base_traj = std::make_shared<motion::JointTrajectory>(
-      waypoints, speed_factor, 0.02);
+  // Build base trajectory with prefiltering + gradual reduction
+  auto base_traj = buildJointTrajectoryRobust(
+      waypoints, speed_factor, motion::kDefaultBaseMaxDeviation);
+  if (!base_traj) {
+    throw std::runtime_error(
+        "Failed to build base JointTrajectory (all waypoint counts failed).");
+  }
   if (base_traj->getDuration() == 0.0) {
     _log("info", "Already at goal.");
     return base_traj;
   }
 
   // Check if the trajectory violates the height limit
-  const int kCheckSamples = 200;
   double duration = base_traj->getDuration();
-  double dt = duration / kCheckSamples;
+  double check_dt = duration / 200;
   bool has_violation = false;
-  for (int i = 0; i <= kCheckSamples; i++) {
-    double t = std::min(i * dt, duration);
+  for (int i = 0; i <= 200; i++) {
+    double t = std::min(i * check_dt, duration);
     Vector7d q_sample = base_traj->getJointPositions(t);
     double z = kinematics::fk(q_sample)(2, 3);
     if (z < height_limit) {
@@ -512,7 +576,55 @@ Panda::computeTrajectoryWithHeightLimit(
 
   _log("warning", "Height violation detected. Computing corrected trajectory.");
   return std::make_shared<motion::HeightConstrainedJointTrajectory>(
-      base_traj, height_limit, 0.001, 0.001, speed_factor);
+      base_traj, height_limit, dt, max_deviation, speed_factor);
+}
+
+bool Panda::executeTrajectory(
+    std::shared_ptr<motion::JointTrajectory> trajectory,
+    const Vector7d &stiffness, const Vector7d &damping,
+    double dq_threshold, double success_threshold) {
+  stopController();
+  recover();
+  _setState(robot_->readOnce());
+  _log("info", "Executing pre-computed trajectory (duration=%.2f s).",
+       trajectory->getDuration());
+  if (trajectory->getDuration() == 0.0) {
+    _log("info", "Trajectory has zero duration. Already at goal.");
+    return true;
+  }
+
+  // Move to trajectory start if the robot has drifted since compute time.
+  // Without this, the PD controller (K_p=600) would produce a torque spike
+  // from the position mismatch, triggering power_limit_violation.
+  Vector7d q_now = getJointPositions();
+  Vector7d q_start = trajectory->getJointPositions(0.0);
+  double start_err = (q_now - q_start).norm();
+  constexpr double kStartTolerance = 1e-3;  // ~0.06° per joint
+  if (start_err > kStartTolerance) {
+    _log("info",
+         "Robot position differs from trajectory start (err=%.4f rad). "
+         "Moving to start position first.",
+         start_err);
+    std::vector<Vector7d> approach_wps;
+    approach_wps.push_back(q_start);
+    if (!moveToJointPosition(approach_wps, 0.2, stiffness, damping,
+                             dq_threshold, success_threshold)) {
+      _log("error", "Failed to move to trajectory start position.");
+      return false;
+    }
+    // Re-read state after approach move
+    _setState(robot_->readOnce());
+  }
+
+  auto ctrl = std::make_shared<controllers::JointTrajectory>(
+      trajectory, stiffness, damping, dq_threshold);
+  _startController(ctrl);
+  auto cb = _createTorqueCallback();
+  _runController(cb);
+  const Vector7d q =
+      Eigen::Map<const Vector7d>(robot_->readOnce().q.data());
+  Vector7d q_goal = trajectory->getJointPositions(trajectory->getDuration());
+  return q_goal.isApprox(q, success_threshold);
 }
 
 bool Panda::moveToPose(const Eigen::Vector3d &position,
