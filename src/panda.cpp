@@ -303,7 +303,8 @@ void Panda::_startController(std::shared_ptr<TorqueController> controller_ptr) {
   virtual_walls_->reset();
   this->current_controller_ = controller_ptr;
   current_controller_->setTime(0);
-  current_controller_->start(robot_->readOnce(), model_);
+  auto start_state = robot_->readOnce();
+  current_controller_->start(start_state, model_);
 }
 
 TorqueCallback Panda::_createTorqueCallback() {
@@ -487,6 +488,8 @@ bool Panda::moveToJointPositionWithHeightLimit(
     double z = kinematics::fk(q_sample)(2, 3);
     if (z < height_limit) {
       has_violation = true;
+      _log("warning", "Height violation detected at t=%.4f s (z=%.4f < %.4f).",
+           t, z, height_limit);
       break;
     }
   }
@@ -498,8 +501,55 @@ bool Panda::moveToJointPositionWithHeightLimit(
   } else {
     _log("warning",
          "Height violation detected. Computing corrected trajectory.");
-    traj = std::make_shared<motion::HeightConstrainedJointTrajectory>(
-        base_traj, height_limit, dt, max_deviation, speed_factor);
+    try {
+      traj = std::make_shared<motion::HeightConstrainedJointTrajectory>(
+          base_traj, height_limit, dt, max_deviation, speed_factor);
+    } catch (const std::exception &e) {
+      _log("error",
+           "Height-constrained trajectory construction failed: %s. "
+           "Refusing to execute.", e.what());
+      return false;
+    }
+  }
+
+  // ── Final safety gate ────────────────────────────────────────────────────
+  // Densely re-sample the trajectory that is about to be executed and hard-
+  // refuse if ANY sample is below the height limit. This is independent of
+  // the internal verification inside HeightConstrainedJointTrajectory and
+  // also covers the has_violation==false path (base trajectory).
+  {
+    double traj_dur = traj->getDuration();
+    const int kSafetySteps = 1000;
+    double safety_dt = traj_dur / kSafetySteps;
+    double z_min_traj = std::numeric_limits<double>::max();
+    double z_min_traj_t = 0.0;
+    bool safety_violated = false;
+    double worst_viol = 0.0;
+    double worst_viol_t = 0.0;
+    for (int i = 0; i <= kSafetySteps; i++) {
+      double t = std::min(i * safety_dt, traj_dur);
+      Vector7d q_s = traj->getJointPositions(t);
+      double z = kinematics::fk(q_s)(2, 3);
+      if (z < z_min_traj) { z_min_traj = z; z_min_traj_t = t; }
+      if (z < height_limit) {
+        safety_violated = true;
+        double v = height_limit - z;
+        if (v > worst_viol) { worst_viol = v; worst_viol_t = t; }
+      }
+    }
+    _log("info",
+         "Safety gate: z_min=%.4f at t=%.2fs (limit=%.4f, duration=%.2fs).",
+         z_min_traj, z_min_traj_t, height_limit, traj_dur);
+    if (safety_violated) {
+      _log("error",
+           "SAFETY GATE BLOCKED execution: trajectory goes %.4f m below "
+           "height limit (%.4f) at t=%.2fs. "
+           "Reduce dt for denser height correction and retry.",
+           worst_viol, height_limit, worst_viol_t);
+      return false;
+    }
+    _log("info", "Safety gate passed (z_min=%.4f >= limit=%.4f). Executing.",
+         z_min_traj, height_limit);
   }
 
   return executeTrajectory(traj, stiffness, damping, dq_threshold,
@@ -621,6 +671,7 @@ bool Panda::executeTrajectory(
   _startController(ctrl);
   auto cb = _createTorqueCallback();
   _runController(cb);
+  _log("info", "executeTrajectory: control loop exited.");
   const Vector7d q =
       Eigen::Map<const Vector7d>(robot_->readOnce().q.data());
   Vector7d q_goal = trajectory->getJointPositions(trajectory->getDuration());

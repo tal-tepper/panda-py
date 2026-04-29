@@ -210,128 +210,126 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
        "Height constraint: user limit=%.4f, trajectory min=%.4f, effective=%.4f",
        height_limit, z_min_trajectory, z_constraint);
 
-  // Phase 1: Sample the original trajectory and correct violating samples using HQP IK.
-  // Use sequential IK seeding: each corrected sample is seeded from the
-  // previous (corrected) sample, ensuring joint-space continuity.
-  std::vector<Vector7d> corrected_waypoints;
-  corrected_waypoints.reserve(num_samples);
-  
-  Vector7d q_prev = base->getJointPositions(0.0);
-  corrected_waypoints.push_back(q_prev);
+  // Helper: solve IK for target_pose seeded from q_seed.
+  // Tries q7-seeded, default, then all 4 branches. Returns NaN vector on failure.
+  // Crucially, always picks the solution nearest to q_seed to stay on the same
+  // kinematic branch and avoid elbow flips.
+  auto solveIKNearest = [&](const Eigen::Matrix4d &target_pose,
+                            const Vector7d &q_seed) -> Vector7d {
+    // Collect all candidate solutions
+    std::vector<Vector7d> candidates;
+    {
+      Vector7d s = kinematics::ik(target_pose, q_seed, q_seed[6]);
+      if (!std::isnan(s[0])) candidates.push_back(s);
+    }
+    {
+      Vector7d s = kinematics::ik(target_pose, q_seed);
+      if (!std::isnan(s[0])) candidates.push_back(s);
+    }
+    {
+      Eigen::Matrix<double, 4, 7> q_all =
+          kinematics::ik_full(target_pose, q_seed, q_seed[6]);
+      for (int row = 0; row < 4; row++) {
+        Vector7d s = q_all.row(row);
+        if (!std::isnan(s[0])) candidates.push_back(s);
+      }
+    }
+    if (candidates.empty())
+      return Vector7d::Constant(std::numeric_limits<double>::quiet_NaN());
+    // Return the candidate closest to the seed (preserves IK branch)
+    Vector7d best = candidates[0];
+    double best_dist = (best - q_seed).norm();
+    for (size_t k = 1; k < candidates.size(); k++) {
+      double d = (candidates[k] - q_seed).norm();
+      if (d < best_dist) { best_dist = d; best = candidates[k]; }
+    }
+    return best;
+  };
+
+  // Phase 1: Sample the base trajectory and collect z values.
+  std::vector<Vector7d> samples(num_samples);
+  std::vector<double>   z_vals(num_samples);
+  for (int i = 0; i < num_samples; i++) {
+    double t = std::min(i * dt, base_duration);
+    samples[i] = base->getJointPositions(t);
+    z_vals[i]  = kinematics::fk(samples[i])(2, 3);
+  }
+
+  // Phase 2: Correct every violating sample by lifting z to height_limit and
+  // re-solving IK, seeded from the BASE trajectory's joint positions at that
+  // same sample index — NOT from the previous corrected sample.
+  //
+  // This is the critical design choice: seeding from samples[i] (the base traj)
+  // means each IK call is a tiny perturbation (only Δz ≈ violation depth), so
+  // it stays on the exact same kinematic branch as the original motion. There
+  // is no accumulated branch drift across samples, and no discontinuity at the
+  // entry/exit of the constrained zone (adjacent base samples are already close).
+  std::vector<Vector7d> corrected(num_samples);
   int num_corrected = 0;
+  int num_ik_failed = 0;
+  double z_min_orig = std::numeric_limits<double>::max();
+  double z_min_orig_t = 0.0;
 
-  for (int i = 1; i < num_samples; i++) {
-    double t = i * dt;
-    if (t > base_duration) t = base_duration;
-    
-    Vector7d q_orig = base->getJointPositions(t);
-    Eigen::Matrix4d pose = kinematics::fk(q_orig);
-    double z = pose(2, 3);
+  for (int i = 0; i < num_samples; i++) {
+    double t = std::min(i * dt, base_duration);
+    if (z_vals[i] < z_min_orig) { z_min_orig = z_vals[i]; z_min_orig_t = t; }
 
-    Vector7d q_sample;
-    if (z < height_limit) {
-      // Lift the target pose to the height limit
-      Eigen::Matrix4d target_pose = pose;
-      target_pose(2, 3) = height_limit;
-
-      // Analytical IK methods
-      Vector7d q_corrected = kinematics::ik(target_pose, q_prev, q_prev[6]);
-
-      if (std::isnan(q_corrected[0])) {
-        // Fallback: default q7
-        q_corrected = kinematics::ik(target_pose, q_prev);
-      }
-      if (std::isnan(q_corrected[0])) {
-        // Try all 4 IK solutions and pick nearest to previous
-        Eigen::Matrix<double, 4, 7> q_all =
-            kinematics::ik_full(target_pose, q_prev, q_prev[6]);
-        double best_dist = std::numeric_limits<double>::max();
-        for (int row = 0; row < 4; row++) {
-          Vector7d candidate = q_all.row(row);
-          if (!std::isnan(candidate[0])) {
-            double d = (candidate - q_prev).norm();
-            if (d < best_dist) {
-              best_dist = d;
-              q_corrected = candidate;
-            }
-          }
+    if (z_vals[i] < height_limit) {
+      Eigen::Matrix4d lifted_pose = kinematics::fk(samples[i]);
+      lifted_pose(2, 3) = height_limit;
+      // Seed from samples[i]: the IK change is only Δz ≈ (height_limit - z_vals[i]),
+      // so the solution is always on the same branch.
+      Vector7d q_corr = solveIKNearest(lifted_pose, samples[i]);
+      if (!std::isnan(q_corr[0])) {
+        double z_check = kinematics::fk(q_corr)(2, 3);
+        if (z_check < height_limit - 1e-4) {
+          _log("warning",
+               "IK lift at idx=%d: FK check z=%.4f still below limit=%.4f "
+               "(violation=%.4f m). Using corrected point anyway.",
+               i, z_check, height_limit, height_limit - z_check);
         }
-      }
-      if (std::isnan(q_corrected[0])) {
-        // Last resort: keep original (will still violate but won't crash)
-        _log("warning",
-             "IK failed at t=%.4f (z=%.4f). Keeping original trajectory.",
-             t, z);
-        q_sample = q_orig;
-      } else {
-        q_sample = q_corrected;
+        corrected[i] = q_corr;
         num_corrected++;
+      } else {
+        _log("warning",
+             "IK failed at idx=%d (t=%.3fs, z=%.4f < %.4f). "
+             "Keeping original — this sample will violate the height limit.",
+             i, t, z_vals[i], height_limit);
+        corrected[i] = samples[i];
+        num_ik_failed++;
       }
     } else {
-      q_sample = q_orig;
+      corrected[i] = samples[i];
     }
-    
-    corrected_waypoints.push_back(q_sample);
-    q_prev = q_sample;
   }
 
   _log("info",
-       "Height-constrained trajectory: %d/%d samples corrected.",
-       num_corrected, num_samples);
+       "Height correction: %d/%d samples lifted, %d IK failures. "
+       "Base traj z_min=%.4f at t=%.2fs (limit=%.4f).",
+       num_corrected, num_samples, num_ik_failed,
+       z_min_orig, z_min_orig_t, height_limit);
 
-  // Log max joint jump between consecutive samples to detect discontinuities
-  double max_jump = 0.0;
-  int max_jump_idx = 0;
-  for (size_t i = 1; i < corrected_waypoints.size(); i++) {
-    double jump = (corrected_waypoints[i] - corrected_waypoints[i-1]).norm();
-    if (jump > max_jump) {
-      max_jump = jump;
-      max_jump_idx = static_cast<int>(i);
-    }
-  }
-  _log("info",
-       "Max joint-space jump: %.6f rad at sample %d (dt=%.4fs, implied vel=%.4f rad/s).",
-       max_jump, max_jump_idx, dt, max_jump / dt);
-
-  // Phase 2: Downsample if needed to limit waypoints for re-planning.
-  // The time-optimal planner is O(n²) so we need to limit waypoints.
+  // Downsample: the time-optimal planner is O(n²); limit to max_waypoints.
+  // Always keep first and last.
   std::vector<Vector7d> waypoints_for_planning;
-  
-  if (max_waypoints > 0 && static_cast<int>(corrected_waypoints.size()) > max_waypoints) {
-    // Adaptive downsampling: keep first, last, and uniformly sampled points
-    // Also keep waypoints at transitions (where correction occurred)
-    _log("info",
-         "Downsampling from %d to ~%d waypoints for re-planning.",
-         corrected_waypoints.size(), max_waypoints);
-    
-    // Calculate step size to get approximately max_waypoints
-    double step = static_cast<double>(corrected_waypoints.size() - 1) / (max_waypoints - 1);
-    
+  if (max_waypoints > 0 && num_samples > max_waypoints) {
     waypoints_for_planning.reserve(max_waypoints);
-    waypoints_for_planning.push_back(corrected_waypoints[0]);
-    
-    double accumulated = 0.0;
-    for (size_t i = 1; i < corrected_waypoints.size() - 1; i++) {
-      accumulated += 1.0;
-      if (accumulated >= step) {
-        waypoints_for_planning.push_back(corrected_waypoints[i]);
-        accumulated -= step;
-      }
+    for (int k = 0; k < max_waypoints; k++) {
+      int idx = static_cast<int>(
+          std::round(static_cast<double>(k) * (num_samples - 1) / (max_waypoints - 1)));
+      waypoints_for_planning.push_back(corrected[idx]);
     }
-    
-    // Always include the last point
-    waypoints_for_planning.push_back(corrected_waypoints.back());
-    
-    _log("info",
-         "Downsampled to %d waypoints.",
-         waypoints_for_planning.size());
+    _log("info", "Downsampled corrected waypoints from %d to %d.", num_samples, max_waypoints);
   } else {
-    waypoints_for_planning = corrected_waypoints;
+    waypoints_for_planning = corrected;
   }
 
-  // Phase 3: Re-plan through waypoints using time-optimal planner.
-  // Use a small max_deviation to allow smoothing of micro-discontinuities.
-  // This produces smooth, dynamically feasible velocities and accelerations.
+  _log("info",
+       "Re-planning with %d corrected waypoints.",
+       static_cast<int>(waypoints_for_planning.size()));
+
+  // Phase 3: Re-plan through the small set of waypoints using the
+  // time-optimal planner.
   _log("info",
        "Re-planning with %d waypoints.",
        waypoints_for_planning.size());
@@ -393,21 +391,52 @@ HeightConstrainedJointTrajectory::HeightConstrainedJointTrajectory(
   }
   
   duration_ = traj_->getDuration();
-  
-  // Log velocity statistics from the re-planned trajectory
-  double max_vel_norm = 0.0;
-  double max_vel_time = 0.0;
-  for (double t = 0.0; t <= duration_; t += 0.01) {
-    Eigen::VectorXd vel = traj_->getVelocity(t);
-    double vel_norm = vel.norm();
-    if (vel_norm > max_vel_norm) {
-      max_vel_norm = vel_norm;
-      max_vel_time = t;
+
+  // Post-construction verification: densely sample the re-planned trajectory
+  // and confirm every point satisfies the height limit. The time-optimal
+  // planner blends in joint space and has no knowledge of Cartesian height,
+  // so residual violations are possible even with fully corrected waypoints.
+  {
+    const int kVerifySteps = 1000;
+    double verify_dt = duration_ / kVerifySteps;
+    double z_min_final = std::numeric_limits<double>::max();
+    double z_min_final_t = 0.0;
+    int n_violations = 0;
+    double worst_violation = 0.0;
+    double worst_violation_t = 0.0;
+    for (int i = 0; i <= kVerifySteps; i++) {
+      double t = std::min(i * verify_dt, duration_);
+      Eigen::VectorXd pos = traj_->getPosition(t);
+      Vector7d q_check(pos.data());
+      double z = kinematics::fk(q_check)(2, 3);
+      if (z < z_min_final) { z_min_final = z; z_min_final_t = t; }
+      if (z < height_limit) {
+        n_violations++;
+        double viol = height_limit - z;
+        if (viol > worst_violation) { worst_violation = viol; worst_violation_t = t; }
+      }
     }
+    _log("info",
+         "Re-planned trajectory: duration=%.2fs, z_min=%.4f at t=%.2fs "
+         "(limit=%.4f, %d/%d samples checked).",
+         duration_, z_min_final, z_min_final_t, height_limit,
+         kVerifySteps + 1, kVerifySteps + 1);
+    if (n_violations > 0) {
+      _log("error",
+           "Re-planned trajectory has %d/%d samples below height limit! "
+           "Worst: z=%.4f (%.4f m below limit=%.4f) at t=%.2fs. "
+           "Reduce dt (denser waypoints) or check IK solutions.",
+           n_violations, kVerifySteps + 1,
+           height_limit - worst_violation, worst_violation, height_limit,
+           worst_violation_t);
+      throw std::runtime_error(
+          "Height-constrained trajectory violates height limit after re-planning "
+          "(worst: " + std::to_string(worst_violation) +
+          " m below limit at t=" + std::to_string(worst_violation_t) + " s).");
+    }
+    _log("info", "Height constraint verified OK: z_min=%.4f >= limit=%.4f.",
+         z_min_final, height_limit);
   }
-  _log("info",
-       "Re-planned trajectory duration: %.2f seconds, max velocity norm: %.4f rad/s at t=%.2fs.",
-       duration_, max_vel_norm, max_vel_time);
 }
 
 double HeightConstrainedJointTrajectory::getDuration() {
